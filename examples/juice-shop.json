@@ -1,0 +1,10 @@
+{
+  "engagement": "juice-shop-local",
+  "operator": "lab-operator",
+  "approver": "lab-owner",
+  "authorization_sha256": "REPLACE_WITH_SHA256_OF_WRITTEN_AUTHORIZATION",
+  "starts_at": "REPLACE_WITH_UTC_START",
+  "ends_at": "REPLACE_WITH_UTC_END",
+  "allow": ["http://127.0.0.1:3000/"],
+  "deny": ["http://127.0.0.1:3000/private"]
+}

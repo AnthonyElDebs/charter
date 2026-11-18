@@ -1,0 +1,22 @@
+name: Verify local evidence lab
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Approve ephemeral local fixture
+        run: python3 lab.py --operator ci-fixture --approve-local-lab
+      - name: Build and start the lab
+        run: docker compose --env-file private/compose.env up --build --wait -d
+      - name: Verify the signed capture and both reports
+        run: python3 tests/smoke.py --export private/reports
+      - name: Inspect service failures
+        if: failure()
+        run: docker compose --env-file private/compose.env logs --tail=80 capture dashboard juice-shop
+      - name: Stop the ephemeral lab
+        if: always()
+        run: docker compose --env-file private/compose.env down

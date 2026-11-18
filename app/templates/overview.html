@@ -1,0 +1,22 @@
+{% extends 'base.html' %}{% block refresh %}<meta http-equiv="refresh" content="10">{% endblock %}
+{% block body %}
+<section class="intro"><div><p class="eyebrow">Operator dashboard</p><h1>Engagements</h1></div>
+<span class="pill {{ 'complete' if scope.active else 'blocked' }}">{{ 'Charter active' if scope.active else 'Approval required' }}</span></section>
+<section class="metrics" aria-label="Engagement totals">
+{% for label,value in [('Runs',totals.total),('Findings',totals.findings),('Blocked requests',totals.blocked)] %}
+<div><span>{{ label }}</span><strong>{{ value }}</strong></div>{% endfor %}</section>
+<section><h2>Authorized scope</h2>
+{% if scope.active %}<div class="panel"><strong>{{ scope.charter.engagement }}</strong>
+<dl><dt>Operator</dt><dd>{{ scope.charter.operator }}</dd><dt>Allow</dt><dd>{{ scope.charter.allow|join(', ') }}</dd>
+<dt>Deny</dt><dd>{{ scope.charter.deny|join(', ') }}</dd><dt>Expires</dt><dd>{{ scope.charter.ends_at }}</dd></dl></div>
+{% else %}<p class="panel">A signed, current local charter is required to capture traffic.</p>{% endif %}</section>
+<section><div class="section-head"><h2>Recent runs</h2><small>Refreshes every 10 seconds</small></div>
+{% if runs %}<div class="panel scroll"><table><thead><tr><th>Run</th><th>Started</th><th>Status</th><th>Observation</th></tr></thead>
+<tbody>{% for run in runs %}<tr><td><a href="/runs/{{ run.id }}">{{ run.id|string|truncate(8,True,'') }}</a></td>
+<td>{{ run.started|utc }}</td><td><span class="pill {{ run.state }}">{{ run.state }}</span></td>
+<td>{{ run.finding.title if run.finding else '—' }}</td></tr>{% endfor %}</tbody></table></div>
+{% else %}<p class="panel">No runs yet. Start the local worker to capture the landing page.</p>{% endif %}</section>
+<section><h2>Audit log</h2><div class="panel">
+{% for event in audit %}<div class="event"><time>{{ event.at|utc }}</time><b>{{ event.decision }}</b><span>{{ event.reason }}</span></div>
+{% else %}Scope decisions and capture outcomes will appear here.{% endfor %}</div></section>
+{% endblock %}

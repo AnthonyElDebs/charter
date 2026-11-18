@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Engagements{% endblock %} · Charter</title>
+{% if exporting %}<style>{{ css|safe }}</style>{% else %}<link rel="stylesheet" href="/style.css">{% endif %}
+{% block refresh %}{% endblock %}</head><body>
+<header><div class="bar"><strong class="brand"><span aria-hidden="true">C</span> Charter</strong>
+<div class="workspace">Local evidence lab</div></div></header>
+<main>{% block body %}{% endblock %}</main></body></html>

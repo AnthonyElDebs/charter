@@ -1,0 +1,28 @@
+{% extends 'base.html' %}{% block title %}Engagement report{% endblock %}
+{% block body %}
+{% if not exporting %}<a class="back" href="/">← All engagements</a>{% endif %}
+<p class="eyebrow">{{ run.details.engagement|default('Scope decision') }}</p>
+<section class="intro"><h1>Engagement report</h1><span class="pill {{ run.state }}">{{ run.state }}</span></section>
+<div class="meta">Run {{ run.id }} · {{ run.started|utc }}</div>
+{% if not exporting and run.state == 'complete' %}<nav><a class="button" href="/runs/{{ run.id }}/report.pdf">Download PDF</a>
+<a class="button light" href="/runs/{{ run.id }}/report.html">Download HTML</a>
+<a href="/api/runs/{{ run.id }}">Evidence JSON</a></nav>{% endif %}
+{% if run.details.charter %}<section><h2>Signed scope</h2><div class="panel"><dl>
+{% for key,label in [('operator','Operator'),('approver','Approver'),('starts_at','Starts'),('ends_at','Expires')] %}
+<dt>{{ label }}</dt><dd>{{ run.details.charter[key] }}</dd>{% endfor %}
+<dt>Allow</dt><dd>{{ run.details.charter.allow|join(', ') }}</dd><dt>Deny</dt><dd>{{ run.details.charter.deny|join(', ') }}</dd>
+<dt>Charter SHA-256</dt><dd class="digest">{{ run.details.charter_sha256 }}</dd></dl></div></section>{% endif %}
+{% if run.finding %}<section><h2>Finding</h2><article class="panel observation"><span class="pill low">{{ run.finding.severity }} severity</span>
+<h3>{{ run.finding.title }}</h3><p>{{ run.finding.evidence }}</p>
+{% for key,label in [('impact','Impact'),('reproduce','Verification'),('remediation','Remediation')] %}
+<h4>{{ label }}</h4><p>{{ run.finding[key] }}</p>{% endfor %}</article></section>
+{% elif run.evidence %}<section><h2>Finding</h2><p class="panel">The configured header check produced no finding for this response.</p></section>{% endif %}
+{% if exchange %}<section><h2>HTTP evidence</h2>
+{% for label in ['request','response'] %}<div class="panel evidence"><h3>{{ label|title }}</h3>
+<pre>{{ exchange[label].head }}</pre><p>{{ run.evidence[label].body_bytes }} body bytes · SHA-256 <code>{{ run.evidence[label].body_sha256 }}</code></p>
+{% if exchange[label].preview %}<details><summary>Body preview · first 2 KiB</summary><pre>{{ exchange[label].preview }}</pre></details>{% endif %}
+{% if exporting and run.evidence[label].body_bytes %}<details><summary>Complete body in base64</summary><pre>{{ run.evidence[label].body_base64 }}</pre></details>{% endif %}
+</div>{% endfor %}</section>{% endif %}
+<section><h2>Audit log</h2><div class="panel">{% for event in run.audit %}
+<div class="event"><time>{{ event.at|utc }}</time><b>{{ event.decision }}</b><span>{{ event.reason }}</span></div>{% endfor %}</div></section>
+{% endblock %}

@@ -1,0 +1,70 @@
+name: charter
+x-service: &service
+  image: charter-lab:local
+  pull_policy: never
+  init: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  read_only: true
+  tmpfs: [/tmp]
+x-database: &database
+  PGHOST: db
+  PGDATABASE: charter
+  PGUSER: charter
+  PGPASSWORD: ${CHARTER_DB_PASSWORD:?Run lab.py to prepare the lab}
+
+services:
+  juice-shop:
+    image: bkimminich/juice-shop:v20.4.0
+    networks: [target]
+    ports: ["127.0.0.1:3000:3000"]
+    security_opt: [no-new-privileges:true]
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: charter
+      POSTGRES_USER: charter
+      POSTGRES_PASSWORD: ${CHARTER_DB_PASSWORD:?Run lab.py to prepare the lab}
+    volumes: [records:/var/lib/postgresql/data]
+    networks: [storage]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U charter"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+  capture:
+    <<: *service
+    build: .
+    command: ["python", "-m", "app.capture"]
+    environment: *database
+    volumes: [./private/approved:/run/charter:ro]
+    networks: [client, target, storage]
+    depends_on:
+      db: {condition: service_healthy}
+      juice-shop: {condition: service_started}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',8080),1).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+  dashboard:
+    <<: *service
+    environment: *database
+    volumes: [./private/approved:/run/charter:ro]
+    networks: [storage]
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      db: {condition: service_healthy}
+  worker:
+    <<: *service
+    profiles: [run]
+    command: ["python", "-m", "app.worker"]
+    networks: [client]
+    depends_on:
+      capture: {condition: service_healthy}
+networks:
+  client: {internal: true}
+  target: {internal: true}
+  storage: {internal: true}
+volumes:
+  records: {}
