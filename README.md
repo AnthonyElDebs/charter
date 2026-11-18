@@ -2,6 +2,15 @@
 
 Charter captures one authorized HTTP exchange from a local OWASP Juice Shop lab and turns it into an evidence-backed security report. A signed charter and its written authorization must pass verification before the proxy forwards a request.
 
+## Demo
+
+In this recorded engagement, the signed worker captured one landing-page response and the proxy blocked a second request. The downloadable HTML includes the complete HTTP message bodies. The PDF summarizes the finding, scope, evidence and remediation.
+
+- [Watch the 17-second dashboard walkthrough](https://raw.githubusercontent.com/AnthonyElDebs/charter/main/demo/sample/demo.webm)
+- [Read the sample PDF](demo/sample/engagement.pdf)
+- [Download the self-contained HTML report](https://github.com/AnthonyElDebs/charter/raw/refs/heads/main/demo/sample/engagement.html)
+- [Inspect the successful run that generated these artifacts](https://github.com/AnthonyElDebs/charter/actions/runs/44417398989)
+
 ## Run the lab
 
 Install Docker Engine with Compose v2, Python 3.11 or newer, and OpenSSH with `ssh-keygen -Y` support. The host approval command uses only the Python standard library. On Windows, you can substitute `py -3` for `python`.
