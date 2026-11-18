@@ -17,7 +17,6 @@ services:
   juice-shop:
     image: bkimminich/juice-shop:v20.4.0
     networks: [target]
-    ports: ["127.0.0.1:3000:3000"]
     security_opt: [no-new-privileges:true]
   db:
     image: postgres:17-alpine
@@ -52,9 +51,20 @@ services:
     environment: *database
     volumes: [./private/approved:/run/charter:ro]
     networks: [storage]
-    ports: ["127.0.0.1:8000:8000"]
     depends_on:
       db: {condition: service_healthy}
+  browser:
+    image: nginx:stable-alpine
+    user: "65534:65534"
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes: [./browser.conf:/etc/nginx/nginx.conf:ro]
+    networks: [entry, storage, target]
+    ports: ["127.0.0.1:8000:8000", "127.0.0.1:3000:3000"]
+    depends_on: [dashboard, juice-shop]
   worker:
     <<: *service
     profiles: [run]
@@ -63,6 +73,7 @@ services:
     depends_on:
       capture: {condition: service_healthy}
 networks:
+  entry: {}
   client: {internal: true}
   target: {internal: true}
   storage: {internal: true}

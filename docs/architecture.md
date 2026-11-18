@@ -8,7 +8,7 @@ The proxy verifies each request against the current signed bytes. It compares th
 
 ## Local network
 
-Compose gives the worker access to the capture service on an internal client network. Only the capture service joins that network and the target network. The database and operator application share an internal storage network with capture. The two host-facing ports are bound to loopback. The database and capture proxy have no published port. Downloading images and building dependencies requires internet access on the Docker host.
+Compose gives the worker access to the capture service on an internal client network. Only the capture service joins both the client and target networks. The database and operator application share an internal storage network with capture. A small browser-facing Nginx relay publishes two loopback ports and proxies each to a fixed service. Only this relay joins the entry network. The worker, target, database, capture service and dashboard have internal networks exclusively. Downloading images and building dependencies requires internet access on the Docker host.
 
 A person browsing the local target directly can reach the landing page independently of the worker. The charter gate covers the worker's traffic. The dashboard is read-only and intended for a trusted local workstation.
 

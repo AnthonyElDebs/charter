@@ -14,6 +14,18 @@ jobs:
         run: docker compose --env-file private/compose.env up --build --wait -d
       - name: Verify the signed capture and both reports
         run: python3 tests/smoke.py --export private/reports
+      - name: Record the operator walkthrough
+        run: |
+          python3 -m venv "$RUNNER_TEMP/recording"
+          "$RUNNER_TEMP/recording/bin/pip" install playwright==1.65.2
+          "$RUNNER_TEMP/recording/bin/python" -m playwright install ffmpeg
+          "$RUNNER_TEMP/recording/bin/python" demo/record.py
+      - name: Save the synthetic lab reports and video
+        uses: actions/upload-artifact@v4
+        with:
+          name: charter-demo
+          path: private/reports/
+          if-no-files-found: error
       - name: Inspect service failures
         if: failure()
         run: docker compose --env-file private/compose.env logs --tail=80 capture dashboard juice-shop
