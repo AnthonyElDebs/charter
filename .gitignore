@@ -1,0 +1,10 @@
+.runtime/
+private/
+__pycache__/
+*.pyc
+*.sig
+*.pem
+.env
+Charter_Project_Plan.pdf
+*.key
+.venv/
