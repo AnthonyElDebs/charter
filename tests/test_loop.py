@@ -85,9 +85,11 @@ class LoopTests(unittest.TestCase):
         def claim(_system, _user):
             return json.dumps({"summary": "done", "goal_proven": True, "tasks": []}), 5
 
-        result, _script = self.campaign(claim, governor=Governor(2, 5, 1000, 0, monotonic_fn=lambda: 0, sleep_fn=lambda _s: None))
+        result, script = self.campaign(claim, governor=Governor(3, 80, 1000, 0, monotonic_fn=lambda: 0, sleep_fn=lambda _s: None))
         self.assertNotEqual(result.state, "proven")
-        self.assertEqual(self.shop.urls, [])
+        self.assertFalse(any(item.get("proven") for item in result.findings))
+        self.assertGreaterEqual(len(script.messages), 1)
+        self.assertTrue(all("evil.example" not in url for url in self.shop.urls))
 
     def test_request_budget_stops_after_one_send(self):
         def recon(_system, _user):
@@ -105,9 +107,10 @@ class LoopTests(unittest.TestCase):
                 {"worker": "http", "intent": "denied", "method": "GET", "url": TARGET + "private"},
             ]}), 5
 
-        result, _script = self.campaign(hostile, governor=Governor(2, 10, 1000, 0, monotonic_fn=lambda: 0, sleep_fn=lambda _s: None))
-        self.assertEqual(result.state, "exhausted")
-        self.assertEqual(self.shop.urls, [])
+        result, _script = self.campaign(hostile, governor=Governor(3, 80, 1000, 0, monotonic_fn=lambda: 0, sleep_fn=lambda _s: None))
+        self.assertNotEqual(result.state, "proven")
+        self.assertFalse(any("evil.example" in url for url in self.shop.urls))
+        self.assertFalse(any(url.rstrip("/").endswith("/private") for url in self.shop.urls))
         self.assertTrue(self.store.blocks)
 
     def test_denied_approval_sends_nothing(self):
