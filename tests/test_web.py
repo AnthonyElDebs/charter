@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -100,6 +101,20 @@ class WebTests(unittest.TestCase):
         self.assertEqual(response.headers["location"], "/campaigns/cid")
         self.assertEqual(thread.call_args.kwargs["args"][3], TARGET)
         started.assert_called_once()
+
+    def test_campaign_record_omits_the_test_password(self):
+        with patch("app.web.Llm.from_env", return_value=object()), \
+             patch("app.web.storage.running_campaign", return_value=None), \
+             patch("app.web.storage.start_campaign", return_value="cid") as started, \
+             patch("app.web.threading.Thread") as thread:
+            thread.return_value.start = lambda: None
+            self.client.post("/actions/campaign", data={
+                "url": TARGET, "goal": "Prove access control", "unattended": "1",
+                "auth_user": "ada@example.test", "auth_password": "Lab-secret-99",
+            }, follow_redirects=False)
+        self.assertNotIn("Lab-secret-99", json.dumps(started.call_args.args[1]))
+        self.assertEqual(thread.call_args.kwargs["args"][6]["password"], "Lab-secret-99")
+        self.assertTrue(started.call_args.args[1]["authenticated"])
 
 
 if __name__ == "__main__":

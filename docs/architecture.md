@@ -10,7 +10,7 @@ The operator chooses the target on the dashboard or with `--url`. Localhost is o
 
 ## Campaign loop
 
-The planner reads a goal, the charter allow and deny lists, a redacted digest of findings, and framed tool output. It returns at most three tasks. Workers then drive recon, one HTTP request, an API check, or ffuf, nuclei, sqlmap, or ZAP when that program is installed. Every URL is checked before it is sent. Tool output is wrapped as untrusted data, and account secrets are left in the evidence store instead of the next prompt. A finding is proven only when the code binds `proven` to a completed run that already has HTTP evidence. Lab mode skips the approval queue. Any other charter waits for Approve or Deny on the dashboard. Turn, request, and token budgets stop the loop.
+The planner reads a goal, the charter allow and deny lists, a redacted digest of findings, and framed tool output. It returns up to eight tasks, limited by `CHARTER_MAX_TASKS`. Workers then drive recon, one HTTP request, an API check, the coverage checks, or ffuf, nuclei, sqlmap, or ZAP. Those four programs are installed in the image. Every URL is checked before it is sent. Tool output is wrapped as untrusted data, and account secrets are left in the evidence store instead of the next prompt. A finding is proven only when the code binds `proven` to a completed run that already has HTTP evidence. Lab mode skips the approval queue. Any other charter waits for Approve or Deny on the dashboard. Turn, request, and token budgets stop the loop.
 
 ## Local network
 

@@ -35,6 +35,21 @@ class GovernorTests(unittest.TestCase):
                     os.environ[name] = value
         self.assertEqual((governor.max_turns, governor.max_requests, governor.max_tokens, governor.min_interval), (3, 4, 5, 0))
 
+    def test_defaults_are_large_enough_for_a_chained_engagement(self):
+        names = ("CHARTER_MAX_TURNS", "CHARTER_MAX_REQUESTS", "CHARTER_TOKEN_BUDGET", "CHARTER_MIN_INTERVAL")
+        previous = {name: os.environ.get(name) for name in names}
+        for name in names:
+            os.environ.pop(name, None)
+        try:
+            governor = Governor.from_env()
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+        self.assertEqual((governor.max_turns, governor.max_requests, governor.max_tokens), (40, 400, 400000))
+
 
 if __name__ == "__main__":
     unittest.main()

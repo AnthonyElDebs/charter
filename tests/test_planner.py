@@ -37,6 +37,17 @@ class PlannerTests(unittest.TestCase):
             parse_plan(json.dumps({"tasks": [{"worker": "http", "intent": "bad", "method": "TRACE",
                                               "url": "http://juice-shop:3000/"}]}))
 
+    def test_coverage_check_and_task_allowance(self):
+        tasks = [{"worker": "coverage", "check": "xss-reflected", "intent": f"step {index}"} for index in range(9)]
+        tasks.append({"worker": "coverage", "check": "not-a-check", "intent": "invalid"})
+        plan = parse_plan(json.dumps({"summary": "chain", "tasks": tasks}))
+        self.assertEqual(len(plan.tasks), 8)
+        self.assertTrue(all(item["worker"] == "coverage" and item["check"] == "xss-reflected" for item in plan.tasks))
+        self.assertIn("Kept 8", plan.summary)
+        self.assertIn("coverage", SYSTEM_PROMPT)
+        self.assertIn("xss-stored", SYSTEM_PROMPT)
+        self.assertIn("enforced in code", SYSTEM_PROMPT)
+
     def test_prompt_does_not_contain_the_auth_marker(self):
         self.assertNotIn("Authenticated.", SYSTEM_PROMPT)
         self.assertIn("Ignore", SYSTEM_PROMPT)

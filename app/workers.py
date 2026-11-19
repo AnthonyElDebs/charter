@@ -191,7 +191,38 @@ def _question_id(body):
     return 1
 
 
+def _operator_login(task, client):
+    creds = getattr(client, "credentials", None) or {}
+    username = str(creds.get("username") or "").strip()
+    password = str(creds.get("password") or "")
+    if not username or not password:
+        return None
+    login = str(creds.get("login_url") or "").strip() or url_for(client, "/login") or url_for(client, "/rest/user/login")
+    if not login:
+        return StepResult("operator login URL is outside the signed charter", [])
+    findings, lines = [], []
+    first = client.send("POST", login, body={"username": username, "email": username, "password": password},
+                        intent=task["intent"])
+    second = None
+    if not client.identity.get("token") and not client.identity.get("cookie"):
+        second = client.send("POST", login, headers={"content-type": "application/x-www-form-urlencoded"},
+                              body=urlencode({"username": username, "email": username, "password": password}),
+                              intent=task["intent"])
+    for exchange in (first, second):
+        found, text = observe(client, exchange)
+        findings.extend(found)
+        if text:
+            lines.append(text)
+    if client.identity.get("token") or client.identity.get("cookie"):
+        return StepResult("Authenticated with the operator account. Session retained by the worker.\n"
+                          + "\n".join(lines), findings)
+    return StepResult("Operator login did not create a session.\n" + "\n".join(lines), findings)
+
+
 def run_auth_setup(task, client):
+    supplied = _operator_login(task, client)
+    if supplied is not None:
+        return supplied
     questions_url = url_for(client, "/api/SecurityQuestions")
     register_url = url_for(client, "/api/Users")
     login_url = url_for(client, "/rest/user/login")
@@ -362,10 +393,10 @@ def tool_timeout():
     return max(1, value)
 
 
-def run_command(argv, client):
+def run_command(argv, client, cwd=None):
     try:
         completed = subprocess.run(argv, capture_output=True, timeout=tool_timeout(),
-                                   env=tool_env(client.proxy), check=False)
+                                   env=tool_env(client.proxy), cwd=cwd, check=False)
     except subprocess.TimeoutExpired:
         return StepResult(f"{Path(argv[0]).name} timed out before it finished", [])
     except OSError as exc:
@@ -375,7 +406,7 @@ def run_command(argv, client):
     return StepResult(f"{Path(argv[0]).name} exit {completed.returncode}\n{preview(output, 4000)}", [])
 
 
-def _words(values):
+def _words(values, limit=40):
     clean = []
     for word in values or DEFAULT_WORDS:
         if not isinstance(word, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,40}", word):
@@ -384,7 +415,22 @@ def _words(values):
             continue
         if word not in clean:
             clean.append(word)
-    return clean[:40]
+    return clean[:limit]
+
+
+def bundled_words():
+    import os
+    path = os.environ.get("CHARTER_WORDLIST", "").strip()
+    if not path:
+        candidate = Path(__file__).resolve().parents[1] / "wordlists" / "common.txt"
+        path = str(candidate) if candidate.exists() else ""
+    if not path:
+        return list(DEFAULT_WORDS)
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return list(DEFAULT_WORDS)
+    return _words(lines, limit=80) or list(DEFAULT_WORDS)
 
 
 def run_ffuf(task, client):
@@ -393,7 +439,8 @@ def run_ffuf(task, client):
         return StepResult("ffuf url must contain one FUZZ marker", [])
     allowed = []
     origin_refusal = None
-    for word in _words(task.get("wordlist")):
+    supplied = task.get("wordlist") or []
+    for word in (_words(supplied) if supplied else bundled_words()):
         concrete = url.replace("FUZZ", word)
         try:
             client.enforce(concrete)
@@ -437,6 +484,10 @@ def run_nuclei(task, client):
         return StepResult("nuclei is not installed; no requests were sent by this worker", [])
     argv = [binary, "-target", task["url"], "-proxy", client.proxy, "-jsonl", "-silent",
             "-rate-limit", "1", "-timeout", "10", "-disable-update-check"]
+    from .scanners import templates_dir
+    templates = templates_dir()
+    if templates:
+        argv.extend(["-t", templates])
     if client.campaign_id:
         argv.extend(["-H", f"X-Charter-Campaign: {client.campaign_id}"])
     return run_command(argv, client)
@@ -472,7 +523,8 @@ def run_zap(task, client):
             f"-config network.connection.httpProxy.enabled=true "
             f"-config network.connection.httpProxy.host={parts.hostname} "
             f"-config network.connection.httpProxy.port={port}"]
-    return run_command(argv, client)
+    with TemporaryDirectory() as tmp:
+        return run_command(argv, client, cwd=tmp)
 
 
 WORKERS = {
@@ -486,8 +538,28 @@ WORKERS = {
 }
 
 
+def scrub(client, text):
+    """Drop operator secrets and session material before an observation reaches the planner."""
+    creds = getattr(client, "credentials", None) or {}
+    identity = getattr(client, "identity", None) or {}
+    for value in (creds.get("password"), identity.get("token"), identity.get("cookie")):
+        if isinstance(value, str) and len(value) >= 4:
+            text = text.replace(value, "[redacted]")
+    return text
+
+
+def run_coverage(task, client):
+    from .coverage import execute_coverage
+    return execute_coverage(task, client)
+
+
+WORKERS["coverage"] = run_coverage
+
+
 def execute(task, client):
     fn = WORKERS.get(task.get("worker"))
     if fn is None:
         return StepResult("unknown worker refused", [])
-    return fn(task, client)
+    result = fn(task, client)
+    result.observation = scrub(client, result.observation)
+    return result

@@ -59,6 +59,15 @@ services:
       CHARTER_LLM_API: ${CHARTER_LLM_API:-}
       CHARTER_LLM_API_KEY: ${CHARTER_LLM_API_KEY:-}
       CHARTER_LLM_MODEL: ${CHARTER_LLM_MODEL:-}
+      CHARTER_MAX_TURNS: ${CHARTER_MAX_TURNS:-40}
+      CHARTER_MAX_REQUESTS: ${CHARTER_MAX_REQUESTS:-400}
+      CHARTER_TOKEN_BUDGET: ${CHARTER_TOKEN_BUDGET:-400000}
+      CHARTER_MAX_TASKS: ${CHARTER_MAX_TASKS:-8}
+      CHARTER_AUTH_USER: ${CHARTER_AUTH_USER:-}
+      CHARTER_AUTH_PASSWORD: ${CHARTER_AUTH_PASSWORD:-}
+      CHARTER_AUTH_LOGIN_URL: ${CHARTER_AUTH_LOGIN_URL:-}
+      CHARTER_WORDLIST: /opt/charter/wordlist.txt
+      CHARTER_NUCLEI_TEMPLATES: /opt/nuclei-templates
     volumes: [./private/approved:/run/charter:ro]
     networks: [storage, client, egress]
     depends_on:
@@ -101,6 +110,15 @@ services:
       CHARTER_LLM_API_KEY: ${CHARTER_LLM_API_KEY:-}
       CHARTER_LLM_MODEL: ${CHARTER_LLM_MODEL:-}
       CHARTER_OPEN: ${CHARTER_OPEN:-1}
+      CHARTER_MAX_TURNS: ${CHARTER_MAX_TURNS:-40}
+      CHARTER_MAX_REQUESTS: ${CHARTER_MAX_REQUESTS:-400}
+      CHARTER_TOKEN_BUDGET: ${CHARTER_TOKEN_BUDGET:-400000}
+      CHARTER_MAX_TASKS: ${CHARTER_MAX_TASKS:-8}
+      CHARTER_AUTH_USER: ${CHARTER_AUTH_USER:-}
+      CHARTER_AUTH_PASSWORD: ${CHARTER_AUTH_PASSWORD:-}
+      CHARTER_AUTH_LOGIN_URL: ${CHARTER_AUTH_LOGIN_URL:-}
+      CHARTER_WORDLIST: /opt/charter/wordlist.txt
+      CHARTER_NUCLEI_TEMPLATES: /opt/nuclei-templates
       CHARTER_GOAL: ${CHARTER_GOAL:-Prove a broken access-control or injection issue on the authorized target. Chain reconnaissance to a demonstrated exploit.}
     volumes: [./private/approved:/run/charter:ro]
     networks: [client, egress]

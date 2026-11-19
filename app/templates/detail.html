@@ -14,7 +14,7 @@
 <dt>Charter SHA-256</dt><dd class="digest">{{ run.details.charter_sha256 }}</dd></dl></div></section>{% endif %}
 {% if run.details.campaign_id %}<p><a href="/campaigns/{{ run.details.campaign_id }}">Campaign</a></p>{% endif %}
 {% if run.finding %}<section><h2>Finding</h2><article class="panel observation"><span class="pill {{ run.finding.severity|lower }}">{{ run.finding.severity }} severity</span>
-<h3>{{ run.finding.title }}</h3>{% if run.finding.proven %}<p>Proven against this captured exchange.</p>{% endif %}<p>{{ run.finding.evidence }}</p>
+<h3>{{ run.finding.title }}</h3>{% if run.finding.check %}<p>Check {{ run.finding.check }}</p>{% endif %}{% if run.finding.proven %}<p>Proven against this captured exchange.</p>{% endif %}<p>{{ run.finding.evidence }}</p>
 {% for key,label in [('impact','Impact'),('reproduce','Verification'),('remediation','Remediation')] %}
 <h4>{{ label }}</h4><p>{{ run.finding[key] }}</p>{% endfor %}</article></section>
 {% elif run.evidence %}<section><h2>Finding</h2><p class="panel">The configured header check produced no finding for this response.</p></section>{% endif %}

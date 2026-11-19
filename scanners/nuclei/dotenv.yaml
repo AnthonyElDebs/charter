@@ -1,0 +1,17 @@
+id: charter-dotenv
+
+info:
+  name: Exposed environment file
+  author: charter
+  severity: high
+  description: An environment file is readable on the approved origin.
+  tags: exposure,secrets
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/.env"
+    matchers:
+      - type: regex
+        regex:
+          - "(?i)(password|secret|api_key)\\s*="
