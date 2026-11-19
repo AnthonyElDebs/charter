@@ -1,0 +1,19 @@
+id: charter-directory-listing
+
+info:
+  name: Directory listing
+  author: charter
+  severity: medium
+  description: A directory index is exposed on the approved origin.
+  tags: misconfig,exposure
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+      - "{{BaseURL}}/files/"
+    matchers:
+      - type: word
+        case-insensitive: true
+        words:
+          - "Index of /"

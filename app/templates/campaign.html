@@ -9,7 +9,7 @@
 {% if campaign.details.reason %}<p class="panel">{{ campaign.details.reason }}</p>{% endif %}
 {% if campaign.details.findings %}<section><h2>Findings</h2><div class="panel">
 {% for finding in campaign.details.findings %}<p><span class="pill {{ finding.severity|lower }}">{{ finding.severity }}</span>
-{{ finding.title }}{% if finding.proven %} · proven{% endif %}
+{{ finding.title }}{% if finding.check %} · {{ finding.check }}{% endif %}{% if finding.proven %} · proven{% endif %}
 {% if finding.run_id %} · <a href="/runs/{{ finding.run_id }}">evidence</a>{% endif %}</p>{% endfor %}
 </div></section>{% endif %}
 <section><h2>Steps</h2>

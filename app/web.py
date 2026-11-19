@@ -152,15 +152,28 @@ async def campaign_action(request: Request):
     if storage.running_campaign():
         return back("A campaign is already running.", url)
     lab = restrictions_open() or fields.get("unattended") == "1"
-    campaign_id = storage.start_campaign(goal, {"lab": lab, "target": url})
-    threading.Thread(target=_campaign, args=(goal, llm, lab, url, campaign_id, charter), daemon=True).start()
+    creds = operator_credentials(fields)
+    campaign_id = storage.start_campaign(goal, {"lab": lab, "target": url,
+                                                "authenticated": bool(creds.get("username") and creds.get("password"))})
+    threading.Thread(target=_campaign, args=(goal, llm, lab, url, campaign_id, charter, creds), daemon=True).start()
     return RedirectResponse(f"/campaigns/{campaign_id}", status_code=303)
 
 
-def _campaign(goal, llm, lab, url, campaign_id, charter):
+def operator_credentials(fields):
+    """Form values win. Otherwise use the process environment. The password is not stored on the campaign row."""
+    if fields.get("auth_user", "").strip():
+        return {"username": fields.get("auth_user", "").strip(),
+                "password": fields.get("auth_password", ""),
+                "login_url": fields.get("auth_login", "").strip()}
+    return {"username": os.environ.get("CHARTER_AUTH_USER", "").strip(),
+            "password": os.environ.get("CHARTER_AUTH_PASSWORD", ""),
+            "login_url": os.environ.get("CHARTER_AUTH_LOGIN_URL", "").strip()}
+
+
+def _campaign(goal, llm, lab, url, campaign_id, charter, credentials=None):
     try:
         run_campaign(goal, root=ROOT, store=storage, llm=llm, lab=lab, charter=charter,
-                     target=url, campaign_id=campaign_id)
+                     target=url, campaign_id=campaign_id, credentials=credentials)
     except Exception:
         log.exception("campaign failed")
 

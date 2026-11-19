@@ -15,6 +15,9 @@ The charter is checked again before anything is sent. Localhost is only the bund
 </div>
 <label>Request body, for methods other than GET and HEAD<textarea name="body"></textarea></label>
 <label>Security goal<textarea name="goal">Prove a broken access-control or injection issue on the target URL. Chain reconnaissance to a demonstrated exploit and keep every request inside the signed charter.</textarea></label>
+<label>Test username, optional<input name="auth_user" type="text" autocomplete="off" spellcheck="false"></label>
+<label>Test password, optional<input name="auth_password" type="password" autocomplete="off"></label>
+<label>Login URL, optional<input name="auth_login" type="text" inputmode="url" autocomplete="off" spellcheck="false"></label>
 <label class="check"><input type="checkbox" name="unattended" value="1" {% if unattended %}checked{% endif %}>Run the whole goal without stopping for each step</label>
 <p>{% if model_ready %}Model endpoint is configured. Autonomous planning can start from this page.{% else %}Capturing a URL does not need a model. Autonomous planning needs CHARTER_LLM_BASE_URL, CHARTER_LLM_MODEL, and a key unless you use Ollama.{% endif %}</p>
 <div class="actions">

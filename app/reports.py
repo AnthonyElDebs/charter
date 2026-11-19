@@ -49,6 +49,8 @@ def pdf(run):
     if finding:
         paragraph(finding["title"], "Heading2")
         paragraph("Severity: " + finding["severity"])
+        if finding.get("check"):
+            paragraph("Check: " + finding["check"])
         if finding.get("proven"):
             paragraph("Proven against the captured HTTP exchange.")
         for key, label in (("evidence","Observation"),("impact","Impact"),

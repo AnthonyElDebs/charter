@@ -1,0 +1,17 @@
+id: charter-git-head
+
+info:
+  name: Exposed Git HEAD
+  author: charter
+  severity: medium
+  description: A Git metadata file is readable on the approved origin.
+  tags: exposure,misconfig
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/.git/HEAD"
+    matchers:
+      - type: word
+        words:
+          - "ref: refs/"

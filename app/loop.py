@@ -84,8 +84,14 @@ def _drive(goal, charter, client, planner, governor, findings, observations, lab
             return {"state": "proven" if _proven(findings) else "complete", "reason": plan.summary}
 
 
+def credentials_from_env():
+    return {"username": os.environ.get("CHARTER_AUTH_USER", "").strip(),
+            "password": os.environ.get("CHARTER_AUTH_PASSWORD", ""),
+            "login_url": os.environ.get("CHARTER_AUTH_LOGIN_URL", "").strip()}
+
+
 def run_campaign(goal, *, root, store, llm, lab=None, governor=None, approval=None, transport=None,
-                 proxy=None, target=None, campaign_id=None, charter=None):
+                 proxy=None, target=None, campaign_id=None, charter=None, credentials=None):
     if charter is None:
         charter = open_scope(target or "http://localhost/") if restrictions_open() else load_verified(root)
     governor = governor or Governor.from_env()
@@ -104,6 +110,8 @@ def run_campaign(goal, *, root, store, llm, lab=None, governor=None, approval=No
     try:
         client = Client(root=root, charter=charter, store=store, governor=governor, proxy=proxy,
                         transport=transport, campaign_id=campaign_id, target=target)
+        supplied = credentials if credentials is not None else credentials_from_env()
+        client.credentials = {key: supplied.get(key, "") for key in ("username", "password", "login_url")}
         probe = target or (charter.get("allow") or [""])[0]
         if probe:
             client.enforce(probe)

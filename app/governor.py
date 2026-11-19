@@ -38,8 +38,8 @@ class Governor:
 
     @classmethod
     def from_env(cls):
-        return cls(_int("CHARTER_MAX_TURNS", 12), _int("CHARTER_MAX_REQUESTS", 80),
-                   _int("CHARTER_TOKEN_BUDGET", 80000), _float("CHARTER_MIN_INTERVAL", 1))
+        return cls(_int("CHARTER_MAX_TURNS", 40), _int("CHARTER_MAX_REQUESTS", 400),
+                   _int("CHARTER_TOKEN_BUDGET", 400000), _float("CHARTER_MIN_INTERVAL", 1))
 
     def snapshot(self):
         return {"turns_remaining": max(0, self.max_turns - self.turns),

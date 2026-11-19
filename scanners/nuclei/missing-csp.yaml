@@ -1,0 +1,20 @@
+id: charter-missing-csp
+
+info:
+  name: HTML response without Content-Security-Policy
+  author: charter
+  severity: info
+  description: An HTML response on the approved origin did not set Content-Security-Policy.
+  tags: misconfig,headers
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    matchers:
+      - type: dsl
+        dsl:
+          - "status_code == 200"
+          - "contains(tolower(header), 'text/html')"
+          - "!contains(tolower(all_headers), 'content-security-policy')"
+        condition: and

@@ -14,7 +14,7 @@ from .scope_gate import fatal_scope, open_scope, restrictions_open
 
 PROXY = "http://capture:8080"
 METHODS = {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
-HEADER_NAMES = {"accept", "content-type", "authorization", "cookie"}
+HEADER_NAMES = {"accept", "content-type", "authorization", "cookie", "origin"}
 
 
 class Exchange:
@@ -74,6 +74,7 @@ class Client:
         self.campaign_id = campaign_id
         self.target = target
         self.identity = {}
+        self.credentials = {}
         options = {"trust_env": False, "follow_redirects": False, "timeout": 30}
         if transport is not None:
             self.http = httpx.Client(transport=transport, **options)
@@ -121,10 +122,14 @@ class Client:
             return self._blocked(method, url, str(exc), intent)
         if use_session:
             token = self.identity.get("token")
-            if not token:
+            cookie = self.identity.get("cookie")
+            if not token and not cookie:
                 return Exchange(method=method, url=url, skipped=True, blocked=True,
                                 reason="no lab session; run auth-setup first")
-            clean["authorization"] = "Bearer " + token
+            if token:
+                clean["authorization"] = "Bearer " + token
+            if cookie:
+                clean["cookie"] = cookie
         try:
             self.enforce(url)
         except Refused as exc:
@@ -140,7 +145,7 @@ class Client:
             safe = "".join(char for char in intent if 32 <= ord(char) < 127)[:160]
             if safe:
                 clean["X-Charter-Intent"] = safe
-        authenticated = "authorization" in clean
+        authenticated = "authorization" in clean or "cookie" in clean
         try:
             response = self._once(method, url, clean, raw)
             if response.status_code == 403 and response.headers.get("X-Charter-Reason") == "rate-limit":
@@ -199,6 +204,11 @@ class Client:
         return self.http.request(method, url, headers=headers, content=raw or None)
 
     def _remember(self, exchange):
+        raw_cookie = exchange.headers.get("set-cookie", "")
+        if raw_cookie:
+            pair = raw_cookie.split(";", 1)[0].strip()
+            if "=" in pair:
+                self.identity["cookie"] = pair
         if exchange.status not in (200, 201):
             return
         path = urlsplit(exchange.url).path or "/"
@@ -219,6 +229,12 @@ class Client:
             if auth.get("bid") is not None:
                 self.identity["basket_id"] = auth["bid"]
             return
+        if "login" in path or path.endswith("/session"):
+            for key in ("access_token", "id_token", "token"):
+                value = data.get(key)
+                if isinstance(value, str) and len(value) >= 8:
+                    self.identity["token"] = value
+                    break
         payload = data.get("user") if isinstance(data.get("user"), dict) else None
         if payload is None and isinstance(data.get("data"), dict):
             payload = data["data"]
