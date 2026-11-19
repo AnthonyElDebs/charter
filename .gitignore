@@ -1,5 +1,6 @@
 .runtime/
-private/
+private/*
+!private/compose.env.example
 __pycache__/
 *.pyc
 *.sig

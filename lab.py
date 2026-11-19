@@ -14,6 +14,27 @@ from uuid import uuid4
 from app.worker_config import TARGET
 
 
+def ensure_database_password(env):
+    """Add a database password without touching model settings already in the file."""
+    secret = secrets.token_urlsafe(36)
+    if not env.exists():
+        env.write_text("CHARTER_DB_PASSWORD=" + secret + "\n", encoding="ascii")
+        return
+    lines = env.read_text(encoding="utf-8").splitlines()
+    found = False
+    output = []
+    for line in lines:
+        if line.startswith("CHARTER_DB_PASSWORD="):
+            value = line.split("=", 1)[1].strip()
+            output.append(line if value else "CHARTER_DB_PASSWORD=" + secret)
+            found = True
+        else:
+            output.append(line)
+    if not found:
+        output.append("CHARTER_DB_PASSWORD=" + secret)
+    env.write_text("\n".join(output) + "\n", encoding="utf-8")
+
+
 def approve(folder, operator, target=None):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,127}", operator):
         raise ValueError("Use an operator ID of 1 to 128 letters, digits or ._@-")
@@ -61,10 +82,7 @@ def approve(folder, operator, target=None):
     subprocess.run(["ssh-keygen", "-Y", "sign", "-f", str(key), "-n", "charter-scope-v1", str(charter)], check=True)
     subprocess.run(["ssh-keygen", "-Y", "verify", "-f", str(trust), "-I", "lab-owner",
                     "-n", "charter-scope-v1", "-s", str(charter) + ".sig"], input=charter.read_bytes(), check=True)
-    env = folder / "compose.env"
-    if not env.exists():
-        with env.open("x", encoding="ascii") as file:
-            file.write("CHARTER_DB_PASSWORD=" + secrets.token_urlsafe(36) + "\n")
+    ensure_database_password(folder / "compose.env")
     pointer = approved / (name + ".tmp")
     pointer.write_text(name, encoding="ascii")
     os.replace(pointer, approved / "current")

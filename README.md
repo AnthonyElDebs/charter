@@ -11,6 +11,14 @@ In this recorded engagement, the signed worker captured one landing-page respons
 - [Download the self-contained HTML report](https://github.com/AnthonyElDebs/charter/raw/refs/heads/main/demo/sample/engagement.html)
 - [Inspect the successful run that generated these artifacts](https://github.com/AnthonyElDebs/charter/actions/runs/44417398989)
 
+## Run on Windows (no commands)
+
+Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) and wait until it says Docker is running. Then double-click `start-charter.bat` in this folder.
+
+The first time, the launcher creates `private\compose.env`. Open that file, fill in the four `CHARTER_LLM_` lines (a Claude example is in the comments), save it, and double-click `start-charter.bat` again for autonomous planning. Leaving those lines blank still opens the dashboard so you can capture a URL. The window stays open so you can read any error. The dashboard opens at [http://127.0.0.1:8000](http://127.0.0.1:8000). Double-click `stop-charter.bat` when you want to stop the lab.
+
+Charter signing runs inside Docker. Windows does not need Python installed.
+
 ## Run the console
 
 Install Docker Engine with Compose v2, Python 3.11 or newer, and OpenSSH with `ssh-keygen -Y` support. The host approval command uses only the Python standard library. On Windows, you can substitute `py -3` for `python`.
