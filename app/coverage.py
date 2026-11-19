@@ -10,7 +10,7 @@ import os
 import re
 import secrets
 import time
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlsplit
 
 from .findings import make_finding
 
@@ -114,7 +114,7 @@ def _forms(body):
     for match in re.finditer(r"<form\b([^>]*)>(.*?)</form>", body or "", re.I | re.S):
         attrs, inner = match.group(1), match.group(2)
         fields = []
-        for tag in re.finditer(r"<(?:input|textarea)\b([^>]*)>", inner, re.I):
+        for tag in re.finditer(r"<(?:input|textarea|select)\b([^>]*)>", inner, re.I):
             fields.append({"name": _attr(tag.group(1), "name"),
                            "type": (_attr(tag.group(1), "type") or "text").lower()})
         found.append({"method": (_attr(attrs, "method") or "GET").upper(),
@@ -176,28 +176,35 @@ def _emails(body):
     return found
 
 
+def _reflected(body, marker):
+    """True when the probe tag is present as markup. An HTML-escaped copy does not count."""
+    return f"<{marker}>" in (body or "")
+
+
 def run_xss_reflected(task, client):
     token = secrets.token_hex(3)
-    marker = f'"><charterxss{token}>'
+    marker = f"charterxss{token}"
+    payload = f'"><{marker}>'
     base = _subject(task, client)
     if not base:
         return _result([], [], "no in-scope URL for reflected XSS")
     names = _param_names(task, base, ["q"])
-    targets = [_query(base, {name: marker}) for name in names]
     findings, lines = [], []
-    for url in targets:
-        exchange = _send(client, task, "GET", url)
+    for name in names:
+        exchange = _send(client, task, "GET", _query(base, {name: payload}))
         finding = None
-        if exchange and not exchange.blocked and not exchange.skipped and marker in (exchange.body or ""):
+        if exchange and not exchange.blocked and not exchange.skipped and _reflected(exchange.body, marker):
             path = urlsplit(exchange.url).path or "/"
             finding = make_finding(
                 "Reflected input is returned without encoding", "High",
-                f"GET {path} echoed the probe characters without HTML encoding.",
+                f"GET {path} parameter {name} echoed the probe tag without HTML encoding.",
                 "A browser that opens this URL can treat the reflected characters as markup.",
                 "Repeat the request on the approved origin with the same probe in the parameter.",
                 "Encode the parameter for the HTML context before writing it into the page.",
                 proven=True, check="xss-reflected", endpoint=path)
         _keep(client, exchange, finding, findings, lines)
+        if finding:
+            break
     return _result(lines, findings, "no reflected markup")
 
 
@@ -315,6 +322,11 @@ def _time_sqli(task, client, base, name, findings, lines):
     return finding
 
 
+def _wants_time(name):
+    low = re.sub(r"[^a-z0-9]", "", str(name).lower())
+    return low in {"id", "item", "num", "cat", "pid", "uid", "product", "productid"} or low.endswith("id")
+
+
 def run_sqli(task, client):
     base = _subject(task, client)
     if not base:
@@ -326,7 +338,7 @@ def run_sqli(task, client):
             return _result(lines, findings, "no SQL error difference")
         if _boolean_sqli(task, client, base, name, findings, lines):
             return _result(lines, findings, "no SQL error difference")
-        if _time_sqli(task, client, base, name, findings, lines):
+        if _wants_time(name) and _time_sqli(task, client, base, name, findings, lines):
             return _result(lines, findings, "no SQL error difference")
     return _result(lines, findings, "no SQL error difference")
 
@@ -356,25 +368,37 @@ def run_command_injection(task, client):
     return _result(lines, findings, "no command execution")
 
 
+TRAVERSAL_PROBES = (
+    ("../../../../etc/passwd", ("root:x:0:0:",)),
+    ("..\\..\\..\\boot.ini", ("[boot loader]",)),
+    ("..%2f..%2f..%2fetc/passwd", ("root:x:0:0:",)),
+)
+
+
 def run_traversal(task, client):
     base = _subject(task, client)
     if not base:
         return _result([], [], "no in-scope URL for path traversal")
-    name = (_param_names(task, base, ["file"]) or ["file"])[0]
-    url = _query(base, {name: "../../../../etc/passwd"})
-    exchange = _send(client, task, "GET", url)
-    finding = None
-    if exchange and not exchange.blocked and "root:x:0:0:" in (exchange.body or ""):
-        path = urlsplit(exchange.url).path or "/"
-        finding = make_finding(
-            "Parameter reads a file outside the application directory", "High",
-            f"GET {path} returned a Unix password-file signature. The file contents are only in the captured body.",
-            "The file parameter can be walked out of the intended directory.",
-            "Request the approved URL with a parent-directory file value and compare it with a normal file name.",
-            "Map the parameter to a known file id, or confine it to a canonical directory.",
-            proven=True, check="traversal", endpoint=path)
+    names = _param_names(task, base, ["file"])[:4]
     findings, lines = [], []
-    _keep(client, exchange, finding, findings, lines)
+    for name in names:
+        for payload, signatures in TRAVERSAL_PROBES:
+            exchange = _send(client, task, "GET", _query(base, {name: payload}))
+            body = exchange.body or "" if exchange else ""
+            finding = None
+            if exchange and not exchange.blocked and any(sig in body for sig in signatures):
+                path = urlsplit(exchange.url).path or "/"
+                finding = make_finding(
+                    "Parameter reads a file outside the application directory", "High",
+                    f"GET {path} parameter {name} returned a file signature from outside the application directory. "
+                    "The file contents are only in the captured body.",
+                    "The file parameter can be walked out of the intended directory.",
+                    "Request the approved URL with a parent-directory file value and compare it with a normal file name.",
+                    "Map the parameter to a known file id, or confine it to a canonical directory.",
+                    proven=True, check="traversal", endpoint=path)
+            _keep(client, exchange, finding, findings, lines)
+            if finding:
+                return _result(lines, findings, "no traversed file")
     return _result(lines, findings, "no traversed file")
 
 
@@ -404,26 +428,55 @@ def run_ssrf(task, client):
     return _result(lines, findings, "no server-side request")
 
 
+REDIRECT_PROBES = ("https://example.invalid/charter", "https:%2F%2Fexample.invalid/charter")
+_REDIRECT_SINKS = (
+    re.compile(r"""http-equiv\s*=\s*["']?refresh["']?[^>]*\burl\s*=\s*['"]?([^'">\s]+)""", re.I),
+    re.compile(r"""(?:window\.|document\.|self\.)?location(?:\.href|\.assign)?\s*=\s*['"]([^'"]+)['"]""", re.I),
+    re.compile(r"""location\.replace\(\s*['"]([^'"]+)['"]\s*\)""", re.I),
+)
+
+
+def _offsite(value):
+    text = unquote(value or "")
+    if "example.invalid" not in text.lower():
+        return False
+    host = (urlsplit(text).hostname or "")
+    if not host and text.startswith("//"):
+        host = urlsplit("http:" + text).hostname or ""
+    return host.lower() == "example.invalid"
+
+
+def _redirected(exchange):
+    if exchange is None or exchange.blocked:
+        return False
+    if _offsite(exchange.headers.get("location", "")):
+        return True
+    body = unquote(exchange.body or "")
+    return any(_offsite(match.group(1)) for pattern in _REDIRECT_SINKS for match in pattern.finditer(body))
+
+
 def run_open_redirect(task, client):
     base = _subject(task, client)
     if not base:
         return _result([], [], "no in-scope URL for open redirect")
-    name = (_param_names(task, base, ["next"]) or ["next"])[0]
-    exchange = _send(client, task, "GET", _query(base, {name: "https://example.invalid/charter"}))
-    finding = None
-    if exchange and not exchange.blocked:
-        location = exchange.headers.get("location", "")
-        if urlsplit(location).hostname == "example.invalid":
-            path = urlsplit(exchange.url).path or "/"
-            finding = make_finding(
-                "Redirect target is taken from the request", "Medium",
-                f"GET {path} redirected to a host that was supplied in the next parameter.",
-                "A caller can send someone from the approved site to an arbitrary host.",
-                "Request the approved URL with an external next value and read the Location header. Do not follow it.",
-                "Accept only relative paths, or compare the target with an allow list of your own hosts.",
-                proven=True, check="open-redirect", endpoint=path)
+    names = _param_names(task, base, ["next"])[:4]
     findings, lines = [], []
-    _keep(client, exchange, finding, findings, lines)
+    for name in names:
+        for payload in REDIRECT_PROBES:
+            exchange = _send(client, task, "GET", _query(base, {name: payload}))
+            finding = None
+            if _redirected(exchange):
+                path = urlsplit(exchange.url).path or "/"
+                finding = make_finding(
+                    "Redirect target is taken from the request", "Medium",
+                    f"GET {path} sent the browser to a host supplied in the {name} parameter. The redirect was not followed.",
+                    "A caller can send someone from the approved site to an arbitrary host.",
+                    "Request the approved URL with an external redirect value and read Location or the page redirect. Do not follow it.",
+                    "Accept only relative paths, or compare the target with an allow list of your own hosts.",
+                    proven=True, check="open-redirect", endpoint=path)
+            _keep(client, exchange, finding, findings, lines)
+            if finding:
+                return _result(lines, findings, "no open redirect")
     return _result(lines, findings, "no open redirect")
 
 

@@ -108,18 +108,19 @@ def _same_origin(page, link):
 def page_links(page_url, body):
     """Same-origin links and form actions from one response. Other hosts are ignored."""
     found, seen = [], set()
-    for raw in re.findall(r"""(?:href|action)\s*=\s*["']([^"'#]+)""", str(body)[:100000], re.I):
-        raw = raw.strip()
-        if raw.lower().startswith(("javascript:", "mailto:", "data:")):
+    pattern = re.compile(r"""(?:href|action)\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))""", re.I)
+    for match in pattern.finditer(str(body)[:150000]):
+        raw = (match.group(1) or match.group(2) or match.group(3) or "").strip()
+        if not raw or raw.lower().startswith(("javascript:", "mailto:", "data:", "#")):
             continue
-        absolute = urljoin(page_url, raw)
+        absolute = urljoin(page_url, raw.split("#", 1)[0])
         parts = urlsplit(absolute)
         path = parts.path or "/"
         if re.search(r"\.(?:css|js|png|jpe?g|gif|svg|ico|woff2?|map)$", path, re.I):
             continue
         if not _same_origin(page_url, absolute):
             continue
-        if parts.query and not re.fullmatch(r"[A-Za-z0-9._~%=&+-]*", parts.query):
+        if parts.query and not re.fullmatch(r"[A-Za-z0-9._~%=&+/:?-]*", parts.query):
             continue
         url = f"{parts.scheme}://{parts.netloc}{path}"
         if parts.query:
@@ -128,43 +129,56 @@ def page_links(page_url, body):
             continue
         seen.add(url)
         found.append(url)
-        if len(found) >= 8:
+        if len(found) >= 40:
             break
     return found
+
+
+def _fetch(task, client, urls, findings, lines):
+    pages = []
+    for url in urls:
+        exchange = client.send("GET", url, intent=task["intent"])
+        pages.append(exchange)
+        found, text = observe(client, exchange)
+        findings.extend(found)
+        if text and not (exchange.blocked and "allow rule" in exchange.reason):
+            lines.append(text)
+    return pages
+
+
+def _links_from(pages):
+    seen, extra = set(), []
+    for exchange in pages:
+        if exchange is None or exchange.blocked or exchange.skipped:
+            continue
+        seen.add(urlsplit(exchange.url)._replace(query="", fragment="").geturl())
+    for exchange in pages:
+        if exchange is None or exchange.blocked or exchange.skipped:
+            continue
+        for link in page_links(exchange.url, exchange.body):
+            key = urlsplit(link)._replace(query="", fragment="").geturl()
+            if key in seen or link in extra:
+                continue
+            seen.add(key)
+            extra.append(link)
+            if len(extra) >= 30:
+                return extra
+    return extra
 
 
 def discover(task, client, paths):
     if client.charter.get("allow"):
         client.enforce(client.target or client.charter["allow"][0])
-    findings, lines, pages = [], [], []
-    for url in candidates(client, paths):
-        exchange = client.send("GET", url, intent=task["intent"])
-        pages.append(exchange)
-        found, text = observe(client, exchange)
-        findings.extend(found)
-        if not (exchange.blocked and "allow rule" in exchange.reason):
-            lines.append(text)
-    seen = {urlsplit(exchange.url)._replace(query="", fragment="").geturl() for exchange in pages}
-    extra = []
-    for exchange in pages:
-        if exchange.blocked or exchange.skipped:
-            continue
-        for link in page_links(exchange.url, exchange.body):
-            key = urlsplit(link)._replace(query="", fragment="").geturl()
-            if key in seen:
-                continue
-            seen.add(key)
-            extra.append(link)
-            if len(extra) >= 8:
-                break
-        if len(extra) >= 8:
-            break
-    for url in extra:
-        exchange = client.send("GET", url, intent=task["intent"])
-        found, text = observe(client, exchange)
-        findings.extend(found)
-        if text:
-            lines.append(text)
+    findings, lines = [], []
+    ledger = getattr(client, "ledger", None)
+    if ledger is not None and ledger.recon_turns:
+        _fetch(task, client, ledger.pending()[:30], findings, lines)
+        return StepResult("\n".join(lines) or "no unseen links remained", findings)
+    pages = _fetch(task, client, candidates(client, paths), findings, lines)
+    if ledger is not None:
+        _fetch(task, client, ledger.pending()[:30], findings, lines)
+    else:
+        _fetch(task, client, _links_from(pages), findings, lines)
     return StepResult("\n".join(lines) or "no in-scope discovery URL", findings)
 
 

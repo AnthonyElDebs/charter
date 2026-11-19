@@ -15,42 +15,106 @@ def _same_host(page, link):
     return (left.hostname or "").lower() == (right.hostname or "").lower()
 
 
+def _key(url):
+    parts = urlsplit(url)
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        return ""
+    return f"{parts.scheme}://{parts.netloc}{parts.path or '/'}"
+
+
 class Ledger:
     def __init__(self):
         self.endpoints = {}
         self.attempts = {}
+        self.fetched = set()
+        self.queue = []
         self.recon_turns = 0
         self.mapped = False
         self.pipeline_done = False
 
+    def _row(self, url):
+        key = _key(url)
+        if not key:
+            return None
+        parts = urlsplit(key)
+        return self.endpoints.setdefault(key, {
+            "url": key, "path": parts.path or "/", "params": [], "forms": [], "sample": "",
+        })
+
+    def _add_param(self, row, name):
+        if row is None or len(row["params"]) >= 12:
+            return
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,40}", name) and name not in row["params"]:
+            row["params"].append(name)
+
+    def record_url(self, url):
+        """Remember a same-origin URL and its query names before it is fetched again."""
+        row = self._row(url)
+        if row is None:
+            return
+        for name, _value in parse_qsl(urlsplit(url).query, keep_blank_values=True):
+            self._add_param(row, name)
+        if row["params"] and not row["sample"]:
+            row["sample"] = url.split("#", 1)[0]
+
     def observe(self, exchange):
         if exchange is None or exchange.blocked or exchange.skipped or not exchange.url:
             return
-        parts = urlsplit(exchange.url)
-        if parts.scheme not in {"http", "https"} or not parts.netloc:
+        key = _key(exchange.url)
+        if not key:
             return
-        path = parts.path or "/"
-        key = f"{parts.scheme}://{parts.netloc}{path}"
-        row = self.endpoints.setdefault(key, {"url": key, "path": path, "params": [], "forms": [], "sample": ""})
-        for name, _value in parse_qsl(parts.query, keep_blank_values=True):
-            if re.fullmatch(r"[A-Za-z0-9_-]{1,40}", name) and name not in row["params"]:
-                row["params"].append(name)
-        if row["params"] and not row["sample"]:
-            row["sample"] = exchange.url.split("#", 1)[0]
+        self.fetched.add(key)
+        self.record_url(exchange.url)
+        row = self.endpoints[key]
         for form in _forms(exchange.body or ""):
             action = urljoin(exchange.url, form.get("action") or exchange.url)
             if not _same_host(exchange.url, action):
                 continue
-            compact = {"method": form.get("method") or "GET", "action": action.split("#", 1)[0],
-                       "fields": [field for field in form.get("fields") or [] if field.get("name")][:8]}
+            fields = [field for field in form.get("fields") or [] if field.get("name")][:8]
+            method = form.get("method") or "GET"
+            if method == "GET":
+                target = self._row(action)
+                for field in fields:
+                    self._add_param(target, field["name"])
+                if target is not None and target["params"] and not target["sample"]:
+                    target["sample"] = action.split("#", 1)[0].split("?", 1)[0]
+                self._enqueue(action)
+                continue
+            compact = {"method": method, "action": action.split("#", 1)[0], "fields": fields}
             if compact not in row["forms"] and len(row["forms"]) < 4:
                 row["forms"].append(compact)
+        try:
+            from .workers import page_links
+        except Exception:
+            return
+        for link in page_links(exchange.url, exchange.body or ""):
+            self.record_url(link)
+            self._enqueue(link)
+
+    def _enqueue(self, url):
+        key = _key(url)
+        if not key or key in self.fetched or url in self.queue or len(self.queue) >= 80:
+            return
+        self.queue.append(url.split("#", 1)[0])
+
+    def pending(self):
+        fresh = []
+        for url in self.queue:
+            key = _key(url)
+            if key and key not in self.fetched and url not in fresh:
+                fresh.append(url)
+        fresh.sort(key=lambda url: 0 if urlsplit(url).query else 1)
+        return fresh
 
     def mark(self, path, check, outcome):
         self.attempts[(str(path or ""), str(check or ""))] = str(outcome or "checked")
 
     def attempted(self, path, check):
         return (str(path or ""), str(check or "")) in self.attempts
+
+    def seen_check(self, check):
+        ident = str(check or "")
+        return any(name == ident for (_path, name) in self.attempts)
 
     def snapshot(self):
         endpoints = []

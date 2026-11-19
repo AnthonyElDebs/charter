@@ -75,6 +75,34 @@ class Asp:
             if target.startswith("http"):
                 return self._send(302, "", "text/plain", {"Location": target})
             return self._send(200, "stay", "text/plain")
+        if path == "/Login.asp":
+            target = query.get("RetURL", [""])[0]
+            if target.startswith("http"):
+                return self._send(302, "", "text/plain", {"Location": target})
+            return self._send(200, "login", "text/html")
+        if path == "/Jump.asp":
+            target = query.get("RetURL", [""])[0]
+            decoded = target.replace("%2F", "/").replace("%2f", "/")
+            if "example.invalid" in decoded and not target.startswith("https://"):
+                page = f'<html><meta http-equiv="refresh" content="0;url={decoded}"></html>'
+                return self._send(200, page, "text/html")
+            return self._send(200, "stay", "text/html")
+        if path == "/Search.asp":
+            value = query.get("tfSearch", [""])[0]
+            return self._send(200, f"<html>results {value}</html>", "text/html")
+        if path == "/Safe.asp":
+            value = query.get("q", [""])[0].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            return self._send(200, f"<html>{value}</html>", "text/html")
+        if path == "/fetch.asp":
+            value = query.get("url", [""])[0]
+            if "robots.txt" in value:
+                return self._send(200, "User-agent: *\nDisallow: /private\n", "text/plain")
+            return self._send(200, "local", "text/plain")
+        if path == "/win.asp":
+            value = query.get("file", [""])[0]
+            if "boot.ini" in value.lower():
+                return self._send(200, "[boot loader]\ntimeout=30\n", "text/plain")
+            return self._send(200, "no file", "text/plain")
         if path == "/clock.asp":
             return self._send(200, "clock", "text/plain")
         if path == "/product.asp":
@@ -93,7 +121,10 @@ class Asp:
             <a href="/Templatize.asp?item=html">item</a>
             <a href="/download.asp?file=readme.txt">file</a>
             <a href="/go.asp?next=home">go</a>
+            <a href="/Login.asp?RetURL=/home.asp">login</a>
+            <a href="/fetch.asp?url=/robots.txt">fetch</a>
             <a href="http://evil.example/steal?id=1">off</a>
+            <form method="get" action="/Search.asp"><input name="tfSearch"></form>
             <form method="post" action="/comment"><input name="comment"></form>
             </html>"""
             return self._send(200, page, "text/html")
@@ -116,7 +147,11 @@ class Script:
     def complete(self, system, user):
         self.messages.append(user)
         return json.dumps({"summary": "map again", "tasks": [
-            {"worker": "recon", "intent": "Discover paths"}]}), 5
+            {"worker": "recon", "intent": "Discover paths, forms, and parameters"},
+            {"worker": "coverage", "check": "idor", "intent": "idor again"},
+            {"worker": "coverage", "check": "csrf", "intent": "csrf again"},
+            {"worker": "coverage", "check": "open-redirect", "intent": "redirect again"},
+        ]}), 5
 
 
 class PipelineTests(unittest.TestCase):
@@ -139,6 +174,10 @@ class PipelineTests(unittest.TestCase):
             ("xss-reflected", TARGET + "Templatize.asp?item=html", ["item"], "High", "Reflected"),
             ("traversal", TARGET + "download.asp?file=readme.txt", ["file"], "High", "file outside"),
             ("open-redirect", TARGET + "go.asp?next=home", ["next"], "Medium", "Redirect"),
+            ("xss-reflected", TARGET + "Search.asp?tfSearch=a", ["tfSearch"], "High", "Reflected"),
+            ("open-redirect", TARGET + "Login.asp?RetURL=/home.asp", ["RetURL"], "Medium", "Redirect"),
+            ("ssrf", TARGET + "fetch.asp?url=/robots.txt", ["url"], "High", "requested a URL"),
+            ("traversal", TARGET + "win.asp?file=readme.txt", ["file"], "High", "file outside"),
         ]
         for check, url, params, severity, title in cases:
             result = execute({"worker": "coverage", "check": check, "intent": check, "url": url, "params": params},
@@ -159,6 +198,13 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(stored_hit[0]["severity"], "High")
         self.assertEqual(csrf_hit[0]["severity"], "Medium")
         self.assertTrue(stored_hit[0]["run_id"] and csrf_hit[0]["run_id"])
+        encoded = execute({"worker": "coverage", "check": "xss-reflected", "intent": "encoded",
+                           "url": TARGET + "Safe.asp?q=1", "params": ["q"]}, self.client)
+        self.assertFalse(any(item.get("proven") for item in encoded.findings))
+        jumped = execute({"worker": "coverage", "check": "open-redirect", "intent": "meta",
+                          "url": TARGET + "Jump.asp?RetURL=/home.asp", "params": ["RetURL"]}, self.client)
+        jump_hit = [item for item in jumped.findings if item.get("proven") and item.get("check") == "open-redirect"]
+        self.assertTrue(jump_hit and jump_hit[0]["severity"] == "Medium" and jump_hit[0].get("run_id"))
 
     def test_boolean_and_time_sqli_when_there_is_no_error_string(self):
         boolean = execute({"worker": "coverage", "check": "sqli", "intent": "boolean",
@@ -187,10 +233,18 @@ class PipelineTests(unittest.TestCase):
                               governor=quiet(), charter={"allow": [TARGET], "deny": [TARGET + "private"]},
                               transport=self.asp.transport(), target=TARGET)
         self.assertEqual(result.state, "proven")
-        self.assertEqual(len(script.messages), 2)
-        self.assertIn('"mapped": true', script.messages[1])
+        self.assertNotIn("turn budget", result.reason)
+        self.assertLessEqual(len(script.messages), 2)
+        self.assertIn('"mapped": true', script.messages[0])
+        self.assertIn('"pipeline_done": true', script.messages[0])
+        extra = self.store.campaigns[result.campaign_id]["extra"]
+        self.assertLessEqual(extra["recon_turns"], 2)
+        self.assertGreaterEqual(extra["recon_turns"], 1)
         recon_hits = [url for url in self.asp.urls if url.endswith("/showthread.asp?id=0")]
         self.assertEqual(recon_hits, [TARGET + "showthread.asp?id=0"])
+        quotes = [url for url in self.asp.urls if "showthread.asp" in url and "charterbase" in url and ("'" in url or "%27" in url)]
+        self.assertEqual(len(quotes), 1)
+        self.assertEqual(len([url for url in self.asp.urls if url.rstrip("/").endswith("/api/items/1")]), 1)
         self.assertFalse(any("evil.example" in url for url in self.asp.urls))
         self.assertTrue(any(item.get("check") == "sqli" and item.get("severity") == "High" and item.get("proven")
                             for item in result.findings))
@@ -200,6 +254,12 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(any(item.get("check") == "open-redirect" and item.get("severity") == "Medium"
                             for item in result.findings))
         self.assertTrue(any(item.get("check") == "csrf" and item.get("proven") for item in result.findings))
+        self.assertTrue(any(item.get("check") == "ssrf" and item.get("severity") == "High" and item.get("proven")
+                            for item in result.findings))
+        search = [item for item in result.findings if item.get("check") == "xss-reflected" and item.get("proven")]
+        self.assertTrue(any(item.get("endpoint") == "/Search.asp" for item in search))
+        redirects = [item for item in result.findings if item.get("check") == "open-redirect" and item.get("proven")]
+        self.assertTrue(any(item.get("endpoint") == "/Login.asp" for item in redirects))
         headers = [item for item in result.findings if item.get("title") == "Response is missing browser security headers"]
         self.assertEqual(len(headers), 1)
         before = list(self.asp.urls)

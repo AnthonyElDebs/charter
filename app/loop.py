@@ -1,6 +1,7 @@
-"""Closed loop: plan, dispatch, record evidence, and plan again."""
+"""Closed loop: crawl, run the coverage matrix, then allow a few follow-ups."""
 import logging
 import os
+from urllib.parse import urlsplit
 
 from charter import Refused
 from .approval import Queue
@@ -10,7 +11,7 @@ from .governor import BudgetExhausted, Governor
 from .llm import LlmError
 from .findings import dedupe_findings
 from .ledger import Ledger
-from .pipeline import recon_cap, run_pipeline
+from .pipeline import followup_cap, recon_cap, run_pipeline
 from .planner import PlanRejected, Planner
 from .scope_gate import load_verified, local_charter, open_scope, restrictions_open
 from .workers import execute
@@ -51,6 +52,62 @@ def _remember(findings, extra):
     findings[:] = dedupe_findings(findings)
 
 
+def _note(observations, text):
+    observations.append(frame(str(text)[:1500]))
+    if len(observations) > 6:
+        del observations[:-6]
+
+
+def _explicit_url(task):
+    url = task.get("url") if isinstance(task.get("url"), str) else ""
+    if url.startswith(("http://", "https://")):
+        return url
+    return ""
+
+
+def _repeat(ledger, task):
+    """True when this task would redo recon or a check the matrix already ran."""
+    if ledger is None:
+        return False
+    if task.get("worker") == "recon":
+        return ledger.mapped or ledger.recon_turns >= recon_cap()
+    ident = task.get("check") or task.get("worker")
+    url = _explicit_url(task)
+    if task.get("worker") == "http" and url:
+        parts = urlsplit(url)
+        place = f"{parts.scheme}://{(parts.hostname or '').lower()}{parts.path or '/'}"
+        return ledger.attempted(place, "http")
+    path = urlsplit(url).path or "/" if url else ""
+    if path and ledger.attempted(path, ident):
+        return True
+    if not url and ledger.seen_check(ident):
+        return True
+    return False
+
+
+def _crawl(client, findings, observations, lab, approval):
+    ledger = client.ledger
+    if ledger is None:
+        return
+    if not lab:
+        decision = approval.require(client.campaign_id, {
+            "worker": "recon", "intent": "Discover paths, forms, and parameters",
+        })
+        if decision != "approved":
+            _note(observations, f"Operator {decision} reconnaissance.")
+            return
+    while ledger.recon_turns < recon_cap():
+        if ledger.recon_turns and not ledger.pending():
+            break
+        task = {"worker": "recon", "intent": "Discover paths, forms, and parameters"}
+        log.info("campaign %s worker recon", client.campaign_id)
+        result = execute(task, client)
+        ledger.recon_turns += 1
+        ledger.mapped = True
+        _remember(findings, result.findings)
+        _note(observations, f"Recon pass {ledger.recon_turns} mapped {len(ledger.endpoints)} endpoints.")
+
+
 def _matrix(client, findings, observations, lab, approval):
     ledger = client.ledger
     if ledger is None or ledger.pipeline_done or not ledger.mapped:
@@ -62,69 +119,85 @@ def _matrix(client, findings, observations, lab, approval):
         })
         if decision != "approved":
             ledger.pipeline_done = True
-            observations.append(frame(f"Operator {decision} the coverage matrix."))
+            _note(observations, f"Operator {decision} the coverage matrix.")
             return
+    log.info("campaign %s coverage matrix", client.campaign_id)
     result = run_pipeline(client)
     _remember(findings, result.findings)
-    observations.append(frame(result.observation.split("\n", 1)[0][:500]))
+    _note(observations, result.observation.split("\n", 1)[0][:500])
+
+
+def _finish(findings, reason):
+    return {"state": "proven" if _proven(findings) else "complete", "reason": reason}
 
 
 def _drive(goal, charter, client, planner, governor, findings, observations, lab, approval, target):
-    while True:
+    _crawl(client, findings, observations, lab, approval)
+    _matrix(client, findings, observations, lab, approval)
+    followups = 0
+    cap = followup_cap()
+    while followups < cap:
         governor.before_turn()
         try:
             plan, tokens = planner.plan(goal, charter, observations, _digest(findings), governor.snapshot(),
                                         target, client.ledger.snapshot() if client.ledger else None)
         except PlanRejected as exc:
             governor.add_tokens(exc.tokens)
-            observations.append(frame("Planner output was rejected: " + str(exc) + ". Return one JSON object."))
+            _note(observations, "Planner output was rejected: " + str(exc) + ". Return one JSON object.")
+            followups += 1
             continue
         governor.add_tokens(tokens)
         if plan.goal_proven and _proven(findings):
             return {"state": "proven", "reason": plan.summary}
         if plan.goal_proven and not plan.tasks:
-            observations.append(frame(
-                "goal_proven was ignored because no finding with proven=true is bound to captured HTTP evidence."
-            ))
+            _note(observations, "goal_proven was ignored because no finding with proven=true is bound to captured HTTP evidence.")
+            followups += 1
             continue
         if not plan.tasks:
-            return {"state": "proven" if _proven(findings) else "complete", "reason": plan.summary}
+            return _finish(findings, plan.summary)
         if plan.goal_proven:
-            observations.append(frame(
-                "goal_proven was ignored because no finding with proven=true is bound to captured HTTP evidence."
-            ))
+            _note(observations, "goal_proven was ignored because no finding with proven=true is bound to captured HTTP evidence.")
         executed = False
-        skipped_recon = False
+        denied = False
+        ran = 0
         for task in plan.tasks:
-            if task["worker"] == "recon" and client.ledger is not None and (
-                    client.ledger.mapped or client.ledger.recon_turns >= recon_cap()):
-                skipped_recon = True
-                observations.append(frame("Recon was not repeated. The ledger already lists the site structure."))
+            if ran >= 2:
+                break
+            if _repeat(client.ledger, task):
                 continue
             if not lab:
                 decision = approval.require(client.campaign_id, task)
                 if decision != "approved":
-                    observations.append(frame(
-                        f"Operator {decision} this step ({task['worker']}: {task['intent']})."
-                    ))
+                    denied = True
+                    _note(observations, f"Operator {decision} this step ({task['worker']}: {task['intent']}).")
                     continue
             log.info("campaign %s worker %s", client.campaign_id, task["worker"])
             result = execute(task, client)
             executed = True
-            if task["worker"] == "recon" and client.ledger is not None:
-                client.ledger.recon_turns += 1
-                client.ledger.mapped = True
+            ran += 1
+            if client.ledger is not None:
+                if task.get("worker") == "recon":
+                    client.ledger.recon_turns += 1
+                    client.ledger.mapped = True
+                ident = task.get("check") or task.get("worker")
+                url = _explicit_url(task)
+                if task.get("worker") == "http" and url:
+                    parts = urlsplit(url)
+                    place = f"{parts.scheme}://{(parts.hostname or '').lower()}{parts.path or '/'}"
+                else:
+                    place = (urlsplit(url).path or "/") if url else "/"
+                outcome = "proven" if any(item.get("proven") for item in result.findings) else "checked"
+                client.ledger.mark(place, ident, outcome)
             _remember(findings, result.findings)
-            observations.append(frame(result.observation))
-        if client.ledger is not None and client.ledger.mapped:
-            _matrix(client, findings, observations, lab, approval)
-        if len(observations) > 8:
-            del observations[:-8]
-        if skipped_recon and not executed and client.ledger is not None and client.ledger.pipeline_done:
-            return {"state": "proven" if _proven(findings) else "complete",
-                    "reason": "coverage matrix finished; repeated recon was not run"}
+            _note(observations, result.observation[:1500])
+        if not executed:
+            if denied:
+                continue
+            return _finish(findings, "coverage matrix finished; repeated recon and checks were not run")
         if plan.done:
-            return {"state": "proven" if _proven(findings) else "complete", "reason": plan.summary}
+            return _finish(findings, plan.summary)
+        followups += 1
+    return _finish(findings, "coverage matrix finished")
 
 
 def credentials_from_env():
@@ -181,6 +254,7 @@ def run_campaign(goal, *, root, store, llm, lab=None, governor=None, approval=No
                 "findings": _digest(findings),
                 "lab": bool(lab),
                 "target": target or "",
+                "recon_turns": client.ledger.recon_turns if client is not None and client.ledger is not None else 0,
             })
         except Exception:
             logging.exception("could not finish campaign")
