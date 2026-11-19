@@ -28,12 +28,16 @@ def main():
         return 1
     root = Path(os.environ.get("CHARTER_ROOT", "/run/charter"))
     try:
-        llm = Llm.from_env()
         charter = load_verified(root)
         storage.initialize()
-    except (LlmError, Refused, OSError) as exc:
+    except (Refused, OSError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    try:
+        llm = Llm.from_env()
+    except LlmError as exc:
+        llm = None
+        print(str(exc) + " Continuing with the deterministic sweep and a templated report.", file=sys.stderr)
     from .governor import Governor
     governor = Governor.from_env()
     if args.max_turns:

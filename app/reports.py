@@ -45,6 +45,21 @@ def pdf(run):
     paragraph(f"Approved by {scope['approver']} for {scope['operator']}. Window {scope['starts_at']} to {scope['ends_at']}.")
     paragraph("Scope: " + ", ".join(scope["allow"]) + " | Denied: " + ", ".join(scope["deny"]))
     paragraph("Signed charter SHA-256: " + run["details"]["charter_sha256"])
+    report = (run.get("details") or {}).get("report") if isinstance(run.get("details"), dict) else None
+    if isinstance(report, dict) and report.get("executive_summary"):
+        paragraph("Executive summary", "Heading2")
+        paragraph(report.get("executive_summary"))
+        paragraph("Attack chain", "Heading3")
+        paragraph(report.get("attack_chain") or "")
+        for item in report.get("findings") or []:
+            if not isinstance(item, dict):
+                continue
+            paragraph(item.get("title") or item.get("check") or "Finding", "Heading3")
+            paragraph(item.get("narrative") or "")
+            if item.get("cvss"):
+                paragraph(item.get("cvss"))
+            if item.get("run_id"):
+                paragraph("Evidence run " + str(item.get("run_id")))
     finding = run["finding"]
     if finding:
         paragraph(finding["title"], "Heading2")

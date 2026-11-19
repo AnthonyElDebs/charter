@@ -4,13 +4,16 @@ import os
 from urllib.parse import urlsplit
 
 from charter import Refused
+from .access import run_access
 from .approval import Queue
 from .exchange import Client
+from .exploit import run_exploit
 from .framing import frame
 from .governor import BudgetExhausted, Governor
 from .llm import LlmError
 from .findings import dedupe_findings
 from .ledger import Ledger
+from .narrative import write_report
 from .pipeline import followup_cap, recon_cap, run_pipeline
 from .planner import PlanRejected, Planner
 from .scope_gate import load_verified, local_charter, open_scope, restrictions_open
@@ -131,9 +134,34 @@ def _finish(findings, reason):
     return {"state": "proven" if _proven(findings) else "complete", "reason": reason}
 
 
-def _drive(goal, charter, client, planner, governor, findings, observations, lab, approval, target):
+def _accounts(supplied):
+    primary = {key: supplied.get(key, "") for key in ("username", "password", "login_url")}
+    accounts = []
+    if primary["username"] and primary["password"]:
+        accounts.append(dict(primary))
+    second = supplied.get("second") if isinstance(supplied.get("second"), dict) else None
+    if second and str(second.get("username") or "").strip() and second.get("password"):
+        accounts.append({
+            "username": str(second.get("username")).strip(),
+            "password": second.get("password") or "",
+            "login_url": str(second.get("login_url") or primary["login_url"] or "").strip(),
+        })
+    return accounts
+
+
+def _drive(goal, charter, client, llm, governor, findings, observations, lab, approval, target):
     _crawl(client, findings, observations, lab, approval)
     _matrix(client, findings, observations, lab, approval)
+    before = len(findings)
+    run_access(client, findings)
+    if len(findings) != before:
+        findings[:] = dedupe_findings(findings)
+    if llm is not None and client.ledger is not None and client.ledger.pipeline_done:
+        _remember(findings, run_exploit(goal, client, findings, llm, governor, lab, approval))
+        _note(observations, "Exploitation pass finished. Repeated coverage checks were not run.")
+    if llm is None:
+        return _finish(findings, "coverage matrix finished")
+    planner = Planner(llm)
     followups = 0
     cap = followup_cap()
     while followups < cap:
@@ -201,9 +229,18 @@ def _drive(goal, charter, client, planner, governor, findings, observations, lab
 
 
 def credentials_from_env():
-    return {"username": os.environ.get("CHARTER_AUTH_USER", "").strip(),
-            "password": os.environ.get("CHARTER_AUTH_PASSWORD", ""),
-            "login_url": os.environ.get("CHARTER_AUTH_LOGIN_URL", "").strip()}
+    primary = {"username": os.environ.get("CHARTER_AUTH_USER", "").strip(),
+               "password": os.environ.get("CHARTER_AUTH_PASSWORD", ""),
+               "login_url": os.environ.get("CHARTER_AUTH_LOGIN_URL", "").strip()}
+    second_user = os.environ.get("CHARTER_AUTH_USER2", "").strip()
+    second_password = os.environ.get("CHARTER_AUTH_PASSWORD2", "")
+    if second_user and second_password:
+        primary["second"] = {
+            "username": second_user,
+            "password": second_password,
+            "login_url": os.environ.get("CHARTER_AUTH_LOGIN_URL2", "").strip() or primary["login_url"],
+        }
+    return primary
 
 
 def run_campaign(goal, *, root, store, llm, lab=None, governor=None, approval=None, transport=None,
@@ -228,24 +265,36 @@ def run_campaign(goal, *, root, store, llm, lab=None, governor=None, approval=No
                         transport=transport, campaign_id=campaign_id, target=target)
         client.ledger = Ledger()
         supplied = credentials if credentials is not None else credentials_from_env()
+        client.accounts = _accounts(supplied)
         client.credentials = {key: supplied.get(key, "") for key in ("username", "password", "login_url")}
         probe = target or (charter.get("allow") or [""])[0]
         if probe:
             client.enforce(probe)
         elif target:
             raise Refused("no matching allow rule")
-        outcome = _drive(goal, charter, client, Planner(llm), governor, findings, observations,
+        outcome = _drive(goal, charter, client, llm, governor, findings, observations,
                          bool(lab), approval, target)
     except BudgetExhausted as exc:
         outcome = {"state": "proven" if _proven(findings) else "exhausted", "reason": str(exc)}
     except Refused as exc:
         outcome = {"state": "refused", "reason": str(exc)}
     except LlmError as exc:
-        outcome = {"state": "exhausted", "reason": str(exc)}
+        outcome = {"state": "proven" if _proven(findings) else "complete", "reason": str(exc)}
     finally:
         if client is not None:
             client.close()
         try:
+            secrets = []
+            if client is not None:
+                secrets.extend(account.get("password") for account in client.accounts)
+                secrets.append(client.credentials.get("password"))
+                secrets.append(client.identity.get("token"))
+                secrets.extend(getattr(client, "held_secrets", []))
+            try:
+                report = write_report(findings, llm, secrets)
+            except Exception:
+                report = write_report(findings, None, secrets)
+            outcome["report"] = report
             store.finish_campaign(campaign_id, outcome["state"], {
                 "reason": outcome.get("reason", ""),
                 "requests": governor.requests,
@@ -255,6 +304,7 @@ def run_campaign(goal, *, root, store, llm, lab=None, governor=None, approval=No
                 "lab": bool(lab),
                 "target": target or "",
                 "recon_turns": client.ledger.recon_turns if client is not None and client.ledger is not None else 0,
+                "report": report,
             })
         except Exception:
             logging.exception("could not finish campaign")

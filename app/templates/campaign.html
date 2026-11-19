@@ -7,6 +7,12 @@
 <div class="meta">{{ campaign.id }} · {{ campaign.started|utc }}</div>
 {% if campaign.details.target %}<p class="meta">Target {{ campaign.details.target }}</p>{% endif %}
 {% if campaign.details.reason %}<p class="panel">{{ campaign.details.reason }}</p>{% endif %}
+{% if campaign.details.report %}<section><h2>Report</h2><div class="panel">
+<p>{{ campaign.details.report.executive_summary }}</p>
+<h3>Attack chain</h3><p>{{ campaign.details.report.attack_chain }}</p>
+{% for item in campaign.details.report.findings %}<p><b>{{ item.title or item.check }}</b>
+{% if item.run_id %} · <a href="/runs/{{ item.run_id }}">evidence</a>{% endif %}<br>{{ item.narrative }}</p>{% endfor %}
+</div></section>{% endif %}
 {% if campaign.details.findings %}<section><h2>Findings</h2><div class="panel">
 {% for finding in campaign.details.findings %}<p><span class="pill {{ finding.severity|lower }}">{{ finding.severity }}</span>
 {{ finding.title }}{% if finding.check %} · {{ finding.check }}{% endif %}{% if finding.proven %} · proven{% endif %}

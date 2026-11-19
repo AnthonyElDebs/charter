@@ -144,11 +144,12 @@ async def campaign_action(request: Request):
         return back("Write the security goal to test.", url)
     try:
         charter = enforce_url(url)
-        llm = Llm.from_env()
     except Refused as exc:
         return back(str(exc), url)
-    except LlmError as exc:
-        return back(str(exc), url)
+    try:
+        llm = Llm.from_env()
+    except LlmError:
+        llm = None
     if storage.running_campaign():
         return back("A campaign is already running.", url)
     lab = restrictions_open() or fields.get("unattended") == "1"
@@ -162,12 +163,41 @@ async def campaign_action(request: Request):
 def operator_credentials(fields):
     """Form values win. Otherwise use the process environment. The password is not stored on the campaign row."""
     if fields.get("auth_user", "").strip():
-        return {"username": fields.get("auth_user", "").strip(),
-                "password": fields.get("auth_password", ""),
-                "login_url": fields.get("auth_login", "").strip()}
-    return {"username": os.environ.get("CHARTER_AUTH_USER", "").strip(),
-            "password": os.environ.get("CHARTER_AUTH_PASSWORD", ""),
-            "login_url": os.environ.get("CHARTER_AUTH_LOGIN_URL", "").strip()}
+        creds = {"username": fields.get("auth_user", "").strip(),
+                 "password": fields.get("auth_password", ""),
+                 "login_url": fields.get("auth_login", "").strip()}
+    else:
+        creds = {"username": os.environ.get("CHARTER_AUTH_USER", "").strip(),
+                 "password": os.environ.get("CHARTER_AUTH_PASSWORD", ""),
+                 "login_url": os.environ.get("CHARTER_AUTH_LOGIN_URL", "").strip()}
+    if fields.get("auth_user2", "").strip():
+        creds["second"] = {"username": fields.get("auth_user2", "").strip(),
+                           "password": fields.get("auth_password2", ""),
+                           "login_url": fields.get("auth_login2", "").strip() or creds["login_url"]}
+    else:
+        second_user = os.environ.get("CHARTER_AUTH_USER2", "").strip()
+        second_password = os.environ.get("CHARTER_AUTH_PASSWORD2", "")
+        if second_user and second_password:
+            creds["second"] = {"username": second_user, "password": second_password,
+                               "login_url": os.environ.get("CHARTER_AUTH_LOGIN_URL2", "").strip() or creds["login_url"]}
+    return creds
+
+
+def present(row):
+    """Attach the campaign narrative when this run belongs to one."""
+    row = dict(row)
+    details = dict(row.get("details") or {})
+    campaign_id = details.get("campaign_id")
+    if campaign_id and not details.get("report"):
+        try:
+            campaign = storage.get_campaign(campaign_id)
+        except Exception:
+            campaign = None
+        report = ((campaign or {}).get("details") or {}).get("report") if campaign else None
+        if report:
+            details["report"] = report
+    row["details"] = details
+    return row
 
 
 def _campaign(goal, llm, lab, url, campaign_id, charter, credentials=None):
@@ -198,7 +228,7 @@ def lookup(run_id: UUID):
 
 @app.get("/runs/{run_id}", response_class=HTMLResponse)
 def detail(run_id: UUID):
-    row = lookup(run_id)
+    row = present(lookup(run_id))
     return templates.get_template("detail.html").render(run=row, exchange=exchange_text(row["evidence"] or {}))
 
 
@@ -222,7 +252,7 @@ def campaign_page(campaign_id: UUID):
 def report(run_id: UUID, extension: str):
     if extension not in {"pdf", "html"}:
         raise HTTPException(404)
-    row = lookup(run_id)
+    row = present(lookup(run_id))
     if row["state"] != "complete":
         raise HTTPException(409, "A report requires a completed capture")
     if extension == "pdf":

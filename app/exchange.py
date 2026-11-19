@@ -75,7 +75,9 @@ class Client:
         self.target = target
         self.identity = {}
         self.credentials = {}
+        self.accounts = []
         self.ledger = None
+        self.recent = []
         options = {"trust_env": False, "follow_redirects": False, "timeout": 30}
         if transport is not None:
             self.http = httpx.Client(transport=transport, **options)
@@ -163,6 +165,10 @@ class Client:
                             headers=response.headers)
         if not denied:
             self._remember(exchange)
+            self.recent.append({"method": method, "url": url, "status": exchange.status,
+                                "body": (exchange.body or "")[:500]})
+            if len(self.recent) > 12:
+                del self.recent[:-12]
             if self.ledger is not None:
                 try:
                     self.ledger.observe(exchange)
