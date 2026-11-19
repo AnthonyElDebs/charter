@@ -1,0 +1,25 @@
+{% extends 'base.html' %}{% block refresh %}<meta http-equiv="refresh" content="5">{% endblock %}
+{% block title %}Campaign{% endblock %}
+{% block body %}
+<a class="back" href="/">← All engagements</a>
+<p class="eyebrow">Campaign</p>
+<section class="intro"><h1>{{ campaign.goal }}</h1><span class="pill {{ campaign.state }}">{{ campaign.state }}</span></section>
+<div class="meta">{{ campaign.id }} · {{ campaign.started|utc }}</div>
+{% if campaign.details.target %}<p class="meta">Target {{ campaign.details.target }}</p>{% endif %}
+{% if campaign.details.reason %}<p class="panel">{{ campaign.details.reason }}</p>{% endif %}
+{% if campaign.details.findings %}<section><h2>Findings</h2><div class="panel">
+{% for finding in campaign.details.findings %}<p><span class="pill {{ finding.severity|lower }}">{{ finding.severity }}</span>
+{{ finding.title }}{% if finding.proven %} · proven{% endif %}
+{% if finding.run_id %} · <a href="/runs/{{ finding.run_id }}">evidence</a>{% endif %}</p>{% endfor %}
+</div></section>{% endif %}
+<section><h2>Steps</h2>
+{% if campaign.runs %}<div class="panel scroll"><table><thead><tr><th>Run</th><th>Status</th><th>Intent</th><th>Finding</th></tr></thead>
+<tbody>{% for run in campaign.runs %}<tr>
+<td><a href="/runs/{{ run.id }}">{{ run.id|string|truncate(8,True,'') }}</a></td>
+<td><span class="pill {{ run.state }}">{{ run.state }}</span></td>
+<td>{{ run.details.intent or '—' }}</td>
+<td>{{ run.finding.title if run.finding else '—' }}</td>
+</tr>{% endfor %}</tbody></table></div>
+{% else %}<p class="panel">No exchanges recorded yet.</p>{% endif %}
+</section>
+{% endblock %}

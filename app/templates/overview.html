@@ -1,21 +1,54 @@
-{% extends 'base.html' %}{% block refresh %}<meta http-equiv="refresh" content="10">{% endblock %}
+{% extends 'base.html' %}{% block refresh %}<meta http-equiv="refresh" content="5">{% endblock %}
 {% block body %}
-<section class="intro"><div><p class="eyebrow">Operator dashboard</p><h1>Engagements</h1></div>
+<section class="intro"><div><p class="eyebrow">Operator console</p><h1>Engagements</h1></div>
 <span class="pill {{ 'complete' if scope.active else 'blocked' }}">{{ 'Charter active' if scope.active else 'Approval required' }}</span></section>
+{% if message %}<section><p class="panel note">{{ message }}</p></section>{% endif %}
+<section><h2>Target</h2>
+{% if scope.active %}
+<form method="post" action="/actions/capture">
+<label for="url">URL to test<input id="url" name="url" type="url" value="{{ target }}" required autocomplete="off"></label>
+<p>Authorized: {{ scope.charter.allow|join(', ') }}. Denied: {{ scope.charter.deny|join(', ') or 'none' }}.
+The charter is checked again before anything is sent. Localhost is only the bundled lab, not a limit on what you can authorize.</p>
+<div class="actions">
+<label>Method<select name="method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option><option>HEAD</option><option>OPTIONS</option></select></label>
+</div>
+<label>Request body, for methods other than GET and HEAD<textarea name="body"></textarea></label>
+<label>Security goal<textarea name="goal">Prove a broken access-control or injection issue on the target URL. Chain reconnaissance to a demonstrated exploit and keep every request inside the signed charter.</textarea></label>
+<label class="check"><input type="checkbox" name="unattended" value="1" {% if unattended %}checked{% endif %}>Run the whole goal without stopping for each step</label>
+<p>{% if model_ready %}Model endpoint is configured. Autonomous planning can start from this page.{% else %}Capturing a URL does not need a model. Autonomous planning needs CHARTER_LLM_BASE_URL, CHARTER_LLM_MODEL, and a key unless you use Ollama.{% endif %}</p>
+<div class="actions">
+<button type="submit">Capture this URL</button>
+<button type="submit" class="light" formaction="/actions/campaign">Run autonomous test</button>
+</div>
+</form>
+<p>To authorize a different origin, on the operator machine run <code>python lab.py --operator {{ scope.charter.operator }} --target http://zero.webappsecurity.com/ --approve-target</code></p>
+{% else %}<div class="panel"><p>A signed charter is required before this console will send anything.</p>
+<p>Bundled lab: <code>python lab.py --operator YOUR_ID --approve-local-lab</code></p>
+<p>An origin you are authorized to test, including the public Zero Bank demo: <code>python lab.py --operator YOUR_ID --target http://zero.webappsecurity.com/ --approve-target</code></p></div>{% endif %}
+</section>
+{% if approvals %}<section><h2>Waiting for approval</h2><div class="panel">
+{% for item in approvals %}<form method="post" action="/actions/approvals/{{ item.id }}">
+<p><strong>{{ item.task.worker }}</strong> {{ item.task.intent }} {% if item.task.url %}<code>{{ item.task.url }}</code>{% endif %}</p>
+<div class="actions"><button name="decision" value="approved">Approve</button><button class="light" name="decision" value="denied">Deny</button></div>
+</form>{% endfor %}</div></section>{% endif %}
 <section class="metrics" aria-label="Engagement totals">
 {% for label,value in [('Runs',totals.total),('Findings',totals.findings),('Blocked requests',totals.blocked)] %}
 <div><span>{{ label }}</span><strong>{{ value }}</strong></div>{% endfor %}</section>
 <section><h2>Authorized scope</h2>
 {% if scope.active %}<div class="panel"><strong>{{ scope.charter.engagement }}</strong>
 <dl><dt>Operator</dt><dd>{{ scope.charter.operator }}</dd><dt>Allow</dt><dd>{{ scope.charter.allow|join(', ') }}</dd>
-<dt>Deny</dt><dd>{{ scope.charter.deny|join(', ') }}</dd><dt>Expires</dt><dd>{{ scope.charter.ends_at }}</dd></dl></div>
-{% else %}<p class="panel">A signed, current local charter is required to capture traffic.</p>{% endif %}</section>
-<section><div class="section-head"><h2>Recent runs</h2><small>Refreshes every 10 seconds</small></div>
+<dt>Deny</dt><dd>{{ scope.charter.deny|join(', ') or 'none' }}</dd><dt>Expires</dt><dd>{{ scope.charter.ends_at }}</dd></dl></div>
+{% else %}<p class="panel">A signed, current charter is required to capture traffic.</p>{% endif %}</section>
+{% if campaigns %}<section><h2>Campaigns</h2><div class="panel scroll"><table><thead><tr><th>Campaign</th><th>Started</th><th>Status</th><th>Goal</th></tr></thead>
+<tbody>{% for campaign in campaigns %}<tr><td><a href="/campaigns/{{ campaign.id }}">{{ campaign.id|string|truncate(8,True,'') }}</a></td>
+<td>{{ campaign.started|utc }}</td><td><span class="pill {{ campaign.state }}">{{ campaign.state }}</span></td>
+<td>{{ campaign.goal }}</td></tr>{% endfor %}</tbody></table></div></section>{% endif %}
+<section><div class="section-head"><h2>Recent runs</h2><small>Refreshes every 5 seconds</small></div>
 {% if runs %}<div class="panel scroll"><table><thead><tr><th>Run</th><th>Started</th><th>Status</th><th>Observation</th></tr></thead>
 <tbody>{% for run in runs %}<tr><td><a href="/runs/{{ run.id }}">{{ run.id|string|truncate(8,True,'') }}</a></td>
 <td>{{ run.started|utc }}</td><td><span class="pill {{ run.state }}">{{ run.state }}</span></td>
 <td>{{ run.finding.title if run.finding else '—' }}</td></tr>{% endfor %}</tbody></table></div>
-{% else %}<p class="panel">No runs yet. Start the local worker to capture the landing page.</p>{% endif %}</section>
+{% else %}<p class="panel">No runs yet. Choose a target and capture it.</p>{% endif %}</section>
 <section><h2>Audit log</h2><div class="panel">
 {% for event in audit %}<div class="event"><time>{{ event.at|utc }}</time><b>{{ event.decision }}</b><span>{{ event.reason }}</span></div>
 {% else %}Scope decisions and capture outcomes will appear here.{% endfor %}</div></section>

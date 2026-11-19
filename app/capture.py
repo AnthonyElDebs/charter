@@ -1,18 +1,28 @@
-"""A fail-closed HTTP capture service dedicated to the single local demonstration."""
+"""Fail-closed HTTP capture for whatever origin the signed charter allows.
+
+Every request is checked against the current allow and deny rules. In-scope
+exchanges are forwarded and stored. Tunnels to any other host are refused.
+"""
 import asyncio
 from hashlib import sha256
 import logging
+import os
 from pathlib import Path
 import re
+import socket
 from types import SimpleNamespace
 from time import monotonic
+from urllib.parse import urlsplit
 
 from mitmproxy import http, options
 from mitmproxy.tools.dump import DumpMaster
 from charter import check, Refused
 from . import storage
 from .evidence import assess, capture
-from .worker_config import TARGET
+
+
+METHODS = {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
+FORWARDED = ("accept", "content-type", "authorization", "cookie")
 
 
 def active_charter(root, url):
@@ -24,19 +34,98 @@ def active_charter(root, url):
                            authorization=bundle / "authorization.txt", signers=root / "signers")
 
 
+def _interval():
+    try:
+        value = float(os.environ.get("CHARTER_MIN_INTERVAL", "1"))
+    except ValueError:
+        return 1.0
+    return value if value >= 0 else 1.0
+
+
+def reason_code(reason):
+    return "rate-limit" if "rate limit" in reason else "denied"
+
+
+def copy_header(value):
+    text = str(value)
+    if any(ord(char) < 32 or ord(char) == 127 for char in text):
+        raise Refused("invalid header value")
+    return text[:4096]
+
+
+def upstream_of(url):
+    parts = urlsplit(url)
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    default = 443 if parts.scheme == "https" else 80
+    visible = parts.hostname if port == default else f"{parts.hostname}:{port}"
+    return visible, (parts.hostname, port)
+
+
+def same_upstream(expected, address):
+    if not address or len(address) < 2 or address[1] != expected[1]:
+        return False
+    host = address[0]
+    if isinstance(host, bytes):
+        host = host.decode("ascii", "replace")
+    if host == expected[0]:
+        return True
+    try:
+        infos = socket.getaddrinfo(expected[0], expected[1], type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return False
+    return any(item[4][0] == host for item in infos)
+
+
+def origin_permitted(root, host, port):
+    """Allow a TLS tunnel only when the signed charter names this host and port."""
+    from .scope_gate import load_verified
+    charter = load_verified(root)
+    for rule in charter["allow"]:
+        parts = urlsplit(rule)
+        rule_port = parts.port or (443 if parts.scheme == "https" else 80)
+        if parts.hostname == host and rule_port == port:
+            return charter
+    raise Refused("no matching allow rule")
+
+
+def forwarded_headers(req, host):
+    fields = [(b"host", host.encode("ascii")), (b"accept-encoding", b"identity"),
+              (b"user-agent", b"Charter/1.0"), (b"connection", b"close")]
+    saw_accept = False
+    for name in FORWARDED:
+        if name in req.headers:
+            fields.append((name.encode("ascii"), copy_header(req.headers[name]).encode("latin-1")))
+            saw_accept = saw_accept or name == "accept"
+    if not saw_accept:
+        fields.append((b"accept", b"*/*"))
+    return http.Headers(fields)
+
+
 class Gate:
     def __init__(self, root):
         self.root = root
-        self.approved_clients = set()
+        self.approved_clients = {}
         self.next_capture = 0.0
+        self.min_interval = _interval()
 
     def refuse(self, flow, reason, details):
         flow.response = http.Response.make(403, b"Blocked by Charter\n")
         run = storage.begin(details, False, reason)
         flow.response.headers["X-Charter-Run"] = run
+        flow.response.headers["X-Charter-Reason"] = reason_code(reason)
 
     def http_connect(self, flow):
-        self.refuse(flow, "Tunneling is outside the local lab charter", {})
+        host, port = flow.request.host, flow.request.port or 443
+        synthetic = f"https://{host}:{port}/"
+        details = {"url_sha256": sha256(synthetic.encode("utf-8", "surrogatepass")).hexdigest()}
+        flow.response = http.Response.make(403, b"Blocked by Charter\n")
+        try:
+            origin_permitted(self.root, host, port)
+        except (OSError, ValueError, TimeoutError) as exc:
+            self.refuse(flow, str(exc) if isinstance(exc, Refused) else "Missing or invalid approval bundle", details)
+            return
+        self.approved_clients[flow.client_conn.id] = (host, port)
+        flow.response = None
 
     def requestheaders(self, flow):
         req = flow.request
@@ -46,36 +135,52 @@ class Gate:
         try:
             charter = check(active_charter(self.root, req.url), details)
             details["charter"] = charter
-            if (req.url != TARGET or req.method != "GET" or req.host_header != "juice-shop:3000"
-                    or req.headers.get("content-length", "0") != "0"
-                    or any(k in req.headers for k in ("transfer-encoding", "upgrade", "authorization", "cookie"))):
-                raise Refused("Only an anonymous GET of the lab landing page is supported")
-            if monotonic() < self.next_capture:
+            if req.method.upper() not in METHODS:
+                raise Refused("method is outside the signed charter")
+            if any(name in req.headers for name in ("transfer-encoding", "upgrade", "proxy-authorization", "proxy-connection")):
+                raise Refused("unsupported hop-by-hop header")
+            try:
+                length = int(req.headers.get("content-length", "0") or "0")
+            except ValueError as exc:
+                raise Refused("invalid content length") from exc
+            if length < 0 or length > 1_000_000:
+                raise Refused("request body exceeds the local limit")
+            campaign = req.headers.get("x-charter-campaign", "")
+            if campaign:
+                if not re.fullmatch(r"[0-9a-fA-F-]{36}", campaign):
+                    raise Refused("invalid campaign id")
+                details["campaign_id"] = campaign.lower()
+            intent = "".join(char for char in req.headers.get("x-charter-intent", "") if 32 <= ord(char) < 127)[:160]
+            if intent:
+                details["intent"] = intent
+            if self.min_interval and monotonic() < self.next_capture:
                 raise Refused("Local capture rate limit")
-            run = storage.begin(details, True, "Signature, scope, test window and lab request verified")
+            host, upstream = upstream_of(req.url)
+            run = storage.begin(details, True, "Signature, scope and test window verified")
         except (OSError, ValueError, TimeoutError) as exc:
+            self.approved_clients.pop(flow.client_conn.id, None)
             self.refuse(flow, str(exc) if isinstance(exc, Refused) else "Missing or invalid approval bundle", details)
             return
-        self.next_capture = monotonic() + 1
+        self.next_capture = monotonic() + self.min_interval
         flow.metadata["charter_run"] = run
-        self.approved_clients.add(flow.client_conn.id)
-        # Construct the complete upstream header set. No client credentials or overrides are forwarded.
-        req.headers = http.Headers(host="juice-shop:3000", accept="text/html",
-                                   **{"accept-encoding": "identity", "user-agent": "Charter/1.0", "connection": "close"})
+        self.approved_clients[flow.client_conn.id] = upstream
+        # The host is taken from the URL that passed the charter. Campaign metadata stays local.
+        req.headers = forwarded_headers(req, host)
         flow.response = None
 
     def server_connect(self, data):
-        if data.client.id not in self.approved_clients or data.server.address != ("juice-shop", 3000):
+        expected = self.approved_clients.get(data.client.id)
+        if expected is None or not same_upstream(expected, data.server.address):
             data.server.error = "Unapproved upstream connection"
 
     def client_disconnected(self, client):
-        self.approved_clients.discard(client.id)
+        self.approved_clients.pop(client.id, None)
 
     def response(self, flow):
         run = flow.metadata.get("charter_run")
         if run is None:
             return
-        self.approved_clients.discard(flow.client_conn.id)
+        self.approved_clients.pop(flow.client_conn.id, None)
         try:
             evidence = capture(flow)
             storage.finish(run, evidence, assess(evidence))
@@ -87,7 +192,7 @@ class Gate:
         flow.response.headers["X-Charter-Run"] = run
 
     def error(self, flow):
-        self.approved_clients.discard(flow.client_conn.id)
+        self.approved_clients.pop(flow.client_conn.id, None)
         if run := flow.metadata.get("charter_run"):
             storage.finish(run, error="Upstream exchange failed before capture completed")
 
