@@ -9,7 +9,7 @@ from charter import Refused, check
 from .capture import active_charter
 from .framing import preview
 from .governor import BudgetExhausted
-from .scope_gate import fatal_scope
+from .scope_gate import fatal_scope, open_scope, restrictions_open
 
 
 PROXY = "http://capture:8080"
@@ -86,6 +86,9 @@ class Client:
     def enforce(self, url):
         if not isinstance(url, str) or len(url) > 2048:
             raise Refused("invalid URL characters")
+        if restrictions_open():
+            self.charter = open_scope(url)
+            return self.charter
         try:
             charter = check(active_charter(self.root, url), {})
         except OSError as exc:

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -55,6 +56,35 @@ class WebTests(unittest.TestCase):
             response = self.client.post("/actions/capture", data={"url": TARGET, "method": "GET"}, follow_redirects=False)
         send.assert_called_once()
         self.assertEqual(response.headers["location"], "/runs/11111111-1111-1111-1111-111111111111")
+
+    def test_autonomous_test_accepts_a_non_local_origin(self):
+        with patch("app.web.Llm.from_env", return_value=object()), \
+             patch("app.web.storage.running_campaign", return_value=None), \
+             patch("app.web.storage.start_campaign", return_value="cid"), \
+             patch("app.web.threading.Thread") as thread:
+            thread.return_value.start = lambda: None
+            response = self.client.post(
+                "/actions/campaign",
+                data={"url": TARGET, "goal": "Prove access control", "unattended": "1"},
+                headers={"origin": "http://203.0.113.5:8000", "host": "testserver"},
+                follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+        self.assertNotIn("local operator", response.text)
+        self.assertEqual(response.headers["location"], "/campaigns/cid")
+
+    def test_open_mode_captures_a_url_outside_the_charter(self):
+        os.environ["CHARTER_OPEN"] = "1"
+        self.addCleanup(os.environ.pop, "CHARTER_OPEN", None)
+
+        class Response:
+            headers = {"X-Charter-Run": "22222222-2222-2222-2222-222222222222"}
+
+        with patch("app.web.request_through_proxy", return_value=Response()) as send:
+            response = self.client.post("/actions/capture",
+                                        data={"url": "http://zero.webappsecurity.com/", "method": "GET"},
+                                        follow_redirects=False)
+        send.assert_called_once()
+        self.assertEqual(response.headers["location"], "/runs/22222222-2222-2222-2222-222222222222")
 
     def test_campaign_starts_for_the_chosen_url(self):
         with patch("app.web.Llm.from_env", return_value=object()), \

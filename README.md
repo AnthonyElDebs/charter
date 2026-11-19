@@ -19,6 +19,8 @@ The first time, the launcher creates `private\compose.env`. Open that file, fill
 
 Charter signing runs inside Docker. Windows does not need Python installed.
 
+This development build does not enforce the signed charter. Any URL you type is tested, and autonomous mode does not stop for approval. Set `CHARTER_OPEN=0` in `private\compose.env` when you want the charter gates back.
+
 ## Run the console
 
 Install Docker Engine with Compose v2, Python 3.11 or newer, and OpenSSH with `ssh-keygen -Y` support. The host approval command uses only the Python standard library. On Windows, you can substitute `py -3` for `python`.

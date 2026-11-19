@@ -8,6 +8,8 @@ from uuid import uuid4
 from mitmproxy import http
 from mitmproxy.test import tflow
 
+import os
+
 import lab
 from app.capture import Gate
 from app.evidence import assess, capture
@@ -133,3 +135,13 @@ class CaptureTests(unittest.TestCase):
         allowed.server = Server(("app.test", 8080))
         self.gate.server_connect(allowed)
         self.assertIsNone(allowed.server.error)
+
+    @patch("app.capture.storage.begin", return_value="demo-id")
+    def test_open_mode_forwards_without_a_charter(self, begin):
+        os.environ["CHARTER_OPEN"] = "1"
+        self.addCleanup(os.environ.pop, "CHARTER_OPEN", None)
+        self.flow.request = http.Request.make("GET", "http://zero.webappsecurity.com/")
+        self.gate.requestheaders(self.flow)
+        self.assertIsNone(self.flow.response)
+        self.assertEqual(self.flow.request.headers["host"], "zero.webappsecurity.com")
+        self.assertTrue(begin.call_args.args[1])

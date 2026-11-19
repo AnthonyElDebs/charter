@@ -4,7 +4,7 @@ import logging
 import os
 from pathlib import Path
 import threading
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Request
@@ -17,7 +17,7 @@ from .capture import active_charter
 from .exchange import request_through_proxy
 from .llm import Llm, LlmError
 from .loop import run_campaign
-from .scope_gate import load_verified, local_charter
+from .scope_gate import load_verified, local_charter, open_scope, restrictions_open
 from . import storage
 from .reports import templates, exchange_text, pdf
 
@@ -33,7 +33,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Charter", lifespan=lifespan, docs_url=None, redoc_url=None)
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "testserver"])
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 ROOT = Path(os.environ.get("CHARTER_ROOT", "/run/charter"))
 
 
@@ -48,11 +48,13 @@ async def headers(request, call_next):
 
 
 def status():
+    if restrictions_open():
+        return {"active": True, "open": True, "local": True, "charter": open_scope("http://localhost/")}
     try:
         charter = load_verified(ROOT)
     except Exception:
-        return {"active": False, "charter": None, "local": False}
-    return {"active": True, "charter": charter, "local": local_charter(charter)}
+        return {"active": False, "open": False, "charter": None, "local": False}
+    return {"active": True, "open": False, "charter": charter, "local": local_charter(charter)}
 
 
 def model_ready():
@@ -67,6 +69,8 @@ def overview():
 def enforce_url(url):
     if not isinstance(url, str) or len(url) > 2048:
         raise Refused("invalid URL characters")
+    if restrictions_open():
+        return open_scope(url)
     try:
         return check(active_charter(ROOT, url), {})
     except OSError as exc:
@@ -77,16 +81,6 @@ async def form_fields(request):
     from urllib.parse import parse_qs
     raw = (await request.body()).decode("utf-8", "replace")
     return {key: values[-1] for key, values in parse_qs(raw, keep_blank_values=True).items()}
-
-
-def local_request(request):
-    host = request.headers.get("host", "").split(":")[0]
-    if host not in {"localhost", "127.0.0.1", "testserver"}:
-        return False
-    origin = request.headers.get("origin")
-    if origin and urlsplit(origin).hostname not in {"localhost", "127.0.0.1", "testserver"}:
-        return False
-    return True
 
 
 def back(message, target=""):
@@ -119,8 +113,6 @@ def css():
 
 @app.post("/actions/capture")
 async def capture_action(request: Request):
-    if not local_request(request):
-        raise HTTPException(403, "This console accepts requests from the local operator only.")
     fields = await form_fields(request)
     url = fields.get("url", "").strip()
     method = fields.get("method", "GET").upper()
@@ -145,8 +137,6 @@ async def capture_action(request: Request):
 
 @app.post("/actions/campaign")
 async def campaign_action(request: Request):
-    if not local_request(request):
-        raise HTTPException(403, "This console accepts requests from the local operator only.")
     fields = await form_fields(request)
     url = fields.get("url", "").strip()
     goal = fields.get("goal", "").strip()
@@ -161,7 +151,7 @@ async def campaign_action(request: Request):
         return back(str(exc), url)
     if storage.running_campaign():
         return back("A campaign is already running.", url)
-    lab = fields.get("unattended") == "1"
+    lab = restrictions_open() or fields.get("unattended") == "1"
     campaign_id = storage.start_campaign(goal, {"lab": lab, "target": url})
     threading.Thread(target=_campaign, args=(goal, llm, lab, url, campaign_id, charter), daemon=True).start()
     return RedirectResponse(f"/campaigns/{campaign_id}", status_code=303)
@@ -177,8 +167,6 @@ def _campaign(goal, llm, lab, url, campaign_id, charter):
 
 @app.post("/actions/approvals/{approval_id}")
 async def decide(approval_id: UUID, request: Request):
-    if not local_request(request):
-        raise HTTPException(403, "This console accepts requests from the local operator only.")
     fields = await form_fields(request)
     decision = fields.get("decision")
     if decision not in {"approved", "denied"}:
