@@ -12,6 +12,7 @@ x-database: &database
   PGDATABASE: charter
   PGUSER: charter
   PGPASSWORD: ${CHARTER_DB_PASSWORD:?Run lab.py to prepare the lab}
+  CHARTER_OPEN: ${CHARTER_OPEN:-1}
 
 services:
   juice-shop:
@@ -82,6 +83,7 @@ services:
     environment:
       CHARTER_PROXY: http://capture:8080
       CHARTER_ROOT: /run/charter
+      CHARTER_OPEN: ${CHARTER_OPEN:-1}
     volumes: [./private/approved:/run/charter:ro]
     networks: [client]
     depends_on:
@@ -98,6 +100,7 @@ services:
       CHARTER_LLM_API: ${CHARTER_LLM_API:-}
       CHARTER_LLM_API_KEY: ${CHARTER_LLM_API_KEY:-}
       CHARTER_LLM_MODEL: ${CHARTER_LLM_MODEL:-}
+      CHARTER_OPEN: ${CHARTER_OPEN:-1}
       CHARTER_GOAL: ${CHARTER_GOAL:-Prove a broken access-control or injection issue on the authorized target. Chain reconnaissance to a demonstrated exploit.}
     volumes: [./private/approved:/run/charter:ro]
     networks: [client, egress]

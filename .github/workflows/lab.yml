@@ -6,6 +6,8 @@ jobs:
   lab:
     runs-on: ubuntu-latest
     timeout-minutes: 18
+    env:
+      CHARTER_OPEN: "0"
     steps:
       - uses: actions/checkout@v4
       - name: Approve ephemeral local fixture

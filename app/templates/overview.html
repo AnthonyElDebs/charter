@@ -7,8 +7,9 @@
 {% if scope.active %}
 <form method="post" action="/actions/capture">
 <label for="url">URL to test<input id="url" name="url" type="url" value="{{ target }}" required autocomplete="off"></label>
-<p>Authorized: {{ scope.charter.allow|join(', ') }}. Denied: {{ scope.charter.deny|join(', ') or 'none' }}.
-The charter is checked again before anything is sent. Localhost is only the bundled lab, not a limit on what you can authorize.</p>
+{% if scope.open %}<p>Development mode: the signed charter, the allow list, and per-step approval are off. The URL in this box is what gets tested.</p>
+{% else %}<p>Authorized: {{ scope.charter.allow|join(', ') }}. Denied: {{ scope.charter.deny|join(', ') or 'none' }}.
+The charter is checked again before anything is sent. Localhost is only the bundled lab, not a limit on what you can authorize.</p>{% endif %}
 <div class="actions">
 <label>Method<select name="method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option><option>HEAD</option><option>OPTIONS</option></select></label>
 </div>

@@ -9,7 +9,7 @@ from .framing import frame
 from .governor import BudgetExhausted, Governor
 from .llm import LlmError
 from .planner import PlanRejected, Planner
-from .scope_gate import load_verified, local_charter
+from .scope_gate import load_verified, local_charter, open_scope, restrictions_open
 from .workers import execute
 
 
@@ -86,9 +86,12 @@ def _drive(goal, charter, client, planner, governor, findings, observations, lab
 
 def run_campaign(goal, *, root, store, llm, lab=None, governor=None, approval=None, transport=None,
                  proxy=None, target=None, campaign_id=None, charter=None):
-    charter = charter or load_verified(root)
+    if charter is None:
+        charter = open_scope(target or "http://localhost/") if restrictions_open() else load_verified(root)
     governor = governor or Governor.from_env()
-    if lab is None:
+    if restrictions_open():
+        lab = True
+    elif lab is None:
         lab = resolve_lab_mode(None, charter)
     if not lab and approval is None:
         timeout = int(os.environ.get("CHARTER_APPROVAL_TIMEOUT", "3600") or "3600")

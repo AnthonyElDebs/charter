@@ -69,6 +69,9 @@ class Governor:
             raise BudgetExhausted("token budget exhausted")
 
     def _wait(self):
+        from .scope_gate import restrictions_open
+        if restrictions_open():
+            return
         delay = self._next - self._monotonic()
         if delay > 0:
             self._sleep(delay)

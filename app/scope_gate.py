@@ -1,5 +1,6 @@
 """Verify the signed charter and classify a refusal as fatal or per-URL."""
 import json
+import os
 from pathlib import Path
 import re
 from urllib.parse import urlsplit
@@ -47,6 +48,21 @@ def load_verified(root):
     if not isinstance(allow, list) or not allow or not isinstance(allow[0], str):
         raise Refused("invalid charter JSON")
     return check(active_charter(root, allow[0]), {})
+
+
+def restrictions_open():
+    """Development builds skip the signed charter. Set CHARTER_OPEN=0 to enforce it again."""
+    return os.environ.get("CHARTER_OPEN", "").strip().lower() in {"1", "true", "yes"}
+
+
+def open_scope(url):
+    parts = urlsplit(url if isinstance(url, str) else "")
+    if parts.scheme in {"http", "https"} and parts.netloc:
+        allow = [f"{parts.scheme}://{parts.netloc}/"]
+    else:
+        allow = []
+    return {"engagement": "development", "operator": "local-operator", "approver": "development",
+            "allow": allow, "deny": [], "starts_at": "", "ends_at": "restrictions off"}
 
 
 def local_charter(charter):

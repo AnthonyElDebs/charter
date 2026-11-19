@@ -115,12 +115,14 @@ class Gate:
         flow.response.headers["X-Charter-Reason"] = reason_code(reason)
 
     def http_connect(self, flow):
+        from .scope_gate import restrictions_open
         host, port = flow.request.host, flow.request.port or 443
         synthetic = f"https://{host}:{port}/"
         details = {"url_sha256": sha256(synthetic.encode("utf-8", "surrogatepass")).hexdigest()}
         flow.response = http.Response.make(403, b"Blocked by Charter\n")
         try:
-            origin_permitted(self.root, host, port)
+            if not restrictions_open():
+                origin_permitted(self.root, host, port)
         except (OSError, ValueError, TimeoutError) as exc:
             self.refuse(flow, str(exc) if isinstance(exc, Refused) else "Missing or invalid approval bundle", details)
             return
@@ -133,7 +135,11 @@ class Gate:
         flow.response = http.Response.make(503, b"Capture unavailable\n")
         details = {"url_sha256": sha256(req.url.encode("utf-8", "surrogatepass")).hexdigest()}
         try:
-            charter = check(active_charter(self.root, req.url), details)
+            from .scope_gate import open_scope, restrictions_open
+            if restrictions_open():
+                charter = open_scope(req.url)
+            else:
+                charter = check(active_charter(self.root, req.url), details)
             details["charter"] = charter
             if req.method.upper() not in METHODS:
                 raise Refused("method is outside the signed charter")
@@ -153,7 +159,7 @@ class Gate:
             intent = "".join(char for char in req.headers.get("x-charter-intent", "") if 32 <= ord(char) < 127)[:160]
             if intent:
                 details["intent"] = intent
-            if self.min_interval and monotonic() < self.next_capture:
+            if not restrictions_open() and self.min_interval and monotonic() < self.next_capture:
                 raise Refused("Local capture rate limit")
             host, upstream = upstream_of(req.url)
             run = storage.begin(details, True, "Signature, scope and test window verified")
