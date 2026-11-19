@@ -1,4 +1,4 @@
-{% extends 'base.html' %}{% block refresh %}<meta http-equiv="refresh" content="5">{% endblock %}
+{% extends 'base.html' %}
 {% block body %}
 <section class="intro"><div><p class="eyebrow">Operator console</p><h1>Engagements</h1></div>
 <span class="pill {{ 'complete' if scope.active else 'blocked' }}">{{ 'Charter active' if scope.active else 'Approval required' }}</span></section>
@@ -6,7 +6,7 @@
 <section><h2>Target</h2>
 {% if scope.active %}
 <form method="post" action="/actions/capture">
-<label for="url">URL to test<input id="url" name="url" type="url" value="{{ target }}" required autocomplete="off"></label>
+<label for="url">URL to test<input id="url" name="url" type="text" inputmode="url" value="{{ target }}" required autocomplete="off" spellcheck="false"></label>
 {% if scope.open %}<p>Development mode: the signed charter, the allow list, and per-step approval are off. The URL in this box is what gets tested.</p>
 {% else %}<p>Authorized: {{ scope.charter.allow|join(', ') }}. Denied: {{ scope.charter.deny|join(', ') or 'none' }}.
 The charter is checked again before anything is sent. Localhost is only the bundled lab, not a limit on what you can authorize.</p>{% endif %}
