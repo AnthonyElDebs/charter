@@ -1,4 +1,4 @@
-"""Prepare and explicitly approve a one-hour charter for the bundled local lab."""
+"""Approve a one-hour charter for the bundled lab or for an origin you are authorized to test."""
 import argparse
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -14,9 +14,15 @@ from uuid import uuid4
 from app.worker_config import TARGET
 
 
-def approve(folder, operator):
+def approve(folder, operator, target=None):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,127}", operator):
         raise ValueError("Use an operator ID of 1 to 128 letters, digits or ._@-")
+    target = target or TARGET
+    from charter import scope_url, Refused
+    try:
+        scope_url(target, rule=True)
+    except Refused as exc:
+        raise ValueError("target must be an http(s) origin without a query or fragment") from exc
     folder.mkdir(mode=0o700, exist_ok=True)
     approved = folder / "approved"
     approved.mkdir(exist_ok=True)
@@ -35,13 +41,21 @@ def approve(folder, operator):
     now = datetime.now(timezone.utc)
     fmt = "%Y-%m-%dT%H:%M:%SZ"
     start, end = now.strftime(fmt), (now + timedelta(hours=1)).strftime(fmt)
-    authorization = (f"Local lab approval by {operator}. One anonymous GET of the bundled Juice Shop "
-                     f"landing page per capture. No other targets or paths. Valid {start} through {end}.\n")
+    if target == TARGET:
+        authorization = (f"Local lab approval by {operator}. Authorized testing of the bundled Juice Shop "
+                         f"origin except the denied /private prefix. Valid {start} through {end}.\n")
+        deny = [TARGET + "private"]
+        engagement = "juice-shop-" + name[:8]
+    else:
+        authorization = (f"Approval by {operator} for authorized testing of {target}. "
+                         f"Other origins are out of scope. Valid {start} through {end}.\n")
+        deny = []
+        engagement = "scope-" + name[:8]
     document = bundle / "authorization.txt"
     document.write_bytes(authorization.encode("utf-8"))
-    record = dict(engagement="juice-shop-" + name[:8], operator=operator, approver="lab-owner",
+    record = dict(engagement=engagement, operator=operator, approver="lab-owner",
                   starts_at=start, ends_at=end, authorization_sha256=sha256(document.read_bytes()).hexdigest(),
-                  allow=[TARGET], deny=[TARGET + "private"])
+                  allow=[target], deny=deny)
     charter = bundle / "charter.json"
     charter.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     subprocess.run(["ssh-keygen", "-Y", "sign", "-f", str(key), "-n", "charter-scope-v1", str(charter)], check=True)
@@ -61,7 +75,15 @@ def approve(folder, operator):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--operator", required=True)
-    parser.add_argument("--approve-local-lab", required=True, action="store_true",
-                        help="Confirm you control this local lab and approve its single read-only check")
+    parser.add_argument("--target", help="Origin you are authorized to test. Defaults to the bundled Juice Shop lab.")
+    parser.add_argument("--approve-local-lab", action="store_true",
+                        help="Confirm you control this machine's Juice Shop lab")
+    parser.add_argument("--approve-target", action="store_true",
+                        help="Confirm you are authorized to test --target")
     args = parser.parse_args()
-    approve(Path(__file__).resolve().parent / "private", args.operator)
+    target = args.target or TARGET
+    if target == TARGET and not (args.approve_local_lab or args.approve_target):
+        parser.error("Pass --approve-local-lab for the bundled lab")
+    if target != TARGET and not args.approve_target:
+        parser.error("Pass --approve-target to authorize an origin you control")
+    approve(Path(__file__).resolve().parent / "private", args.operator, target)

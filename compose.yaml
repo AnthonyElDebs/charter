@@ -26,6 +26,7 @@ services:
       POSTGRES_PASSWORD: ${CHARTER_DB_PASSWORD:?Run lab.py to prepare the lab}
     volumes: [records:/var/lib/postgresql/data]
     networks: [storage]
+    ports: ["127.0.0.1:5432:5432"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U charter"]
       interval: 3s
@@ -37,7 +38,8 @@ services:
     command: ["python", "-m", "app.capture"]
     environment: *database
     volumes: [./private/approved:/run/charter:ro]
-    networks: [client, target, storage]
+    networks: [client, target, storage, egress]
+    ports: ["127.0.0.1:8080:8080"]
     depends_on:
       db: {condition: service_healthy}
       juice-shop: {condition: service_started}
@@ -48,11 +50,19 @@ services:
       retries: 24
   dashboard:
     <<: *service
-    environment: *database
+    environment:
+      <<: *database
+      CHARTER_PROXY: http://capture:8080
+      CHARTER_ROOT: /run/charter
+      CHARTER_LLM_BASE_URL: ${CHARTER_LLM_BASE_URL:-}
+      CHARTER_LLM_API: ${CHARTER_LLM_API:-}
+      CHARTER_LLM_API_KEY: ${CHARTER_LLM_API_KEY:-}
+      CHARTER_LLM_MODEL: ${CHARTER_LLM_MODEL:-}
     volumes: [./private/approved:/run/charter:ro]
-    networks: [storage]
+    networks: [storage, client, egress]
     depends_on:
       db: {condition: service_healthy}
+      capture: {condition: service_healthy}
   browser:
     image: nginx:stable-alpine
     user: "65534:65534"
@@ -69,7 +79,28 @@ services:
     <<: *service
     profiles: [run]
     command: ["python", "-m", "app.worker"]
+    environment:
+      CHARTER_PROXY: http://capture:8080
+      CHARTER_ROOT: /run/charter
+    volumes: [./private/approved:/run/charter:ro]
     networks: [client]
+    depends_on:
+      capture: {condition: service_healthy}
+  planner:
+    <<: *service
+    profiles: [run]
+    command: ["python", "-m", "app.campaign"]
+    environment:
+      <<: *database
+      CHARTER_PROXY: http://capture:8080
+      CHARTER_ROOT: /run/charter
+      CHARTER_LLM_BASE_URL: ${CHARTER_LLM_BASE_URL:-}
+      CHARTER_LLM_API: ${CHARTER_LLM_API:-}
+      CHARTER_LLM_API_KEY: ${CHARTER_LLM_API_KEY:-}
+      CHARTER_LLM_MODEL: ${CHARTER_LLM_MODEL:-}
+      CHARTER_GOAL: ${CHARTER_GOAL:-Prove a broken access-control or injection issue on the authorized target. Chain reconnaissance to a demonstrated exploit.}
+    volumes: [./private/approved:/run/charter:ro]
+    networks: [client, egress]
     depends_on:
       capture: {condition: service_healthy}
 networks:
@@ -77,5 +108,6 @@ networks:
   client: {internal: true}
   target: {internal: true}
   storage: {internal: true}
+  egress: {}
 volumes:
   records: {}

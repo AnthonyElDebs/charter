@@ -1,6 +1,6 @@
 # Charter
 
-Charter captures one authorized HTTP exchange from a local OWASP Juice Shop lab and turns it into an evidence-backed security report. A signed charter and its written authorization must pass verification before the proxy forwards a request.
+Charter is an operator console for authorized security tests. You choose the target URL, capture one exchange, or start an autonomous campaign. A signed charter is checked again before every request. The bundled Juice Shop lab is the default local target, not the only one.
 
 ## Demo
 
@@ -11,22 +11,49 @@ In this recorded engagement, the signed worker captured one landing-page respons
 - [Download the self-contained HTML report](https://github.com/AnthonyElDebs/charter/raw/refs/heads/main/demo/sample/engagement.html)
 - [Inspect the successful run that generated these artifacts](https://github.com/AnthonyElDebs/charter/actions/runs/44417398989)
 
-## Run the lab
+## Run the console
 
 Install Docker Engine with Compose v2, Python 3.11 or newer, and OpenSSH with `ssh-keygen -Y` support. The host approval command uses only the Python standard library. On Windows, you can substitute `py -3` for `python`.
 
-From the repository root, approve a one-hour engagement for a lab you control. Replace `local-operator` with your operator ID.
+Approve the bundled lab, then open the dashboard at [http://127.0.0.1:8000](http://127.0.0.1:8000). Type the URL you want to test, then choose **Capture this URL** or **Run autonomous test**.
 
 ```sh
 python lab.py --operator local-operator --approve-local-lab
 docker compose --env-file private/compose.env up --build --wait -d
+```
+
+The same page can target any origin named by the signed charter. The public Zero Bank demo is one example:
+
+```sh
+python lab.py --operator local-operator --target http://zero.webappsecurity.com/ --approve-target
+```
+
+Put the model settings in `private/compose.env`. That file is gitignored. Do not pass the key on the command line and do not commit it.
+
+```sh
+CHARTER_LLM_BASE_URL=https://api.anthropic.com
+CHARTER_LLM_API=anthropic
+CHARTER_LLM_API_KEY=
+CHARTER_LLM_MODEL=claude-sonnet-4-5
+```
+
+Ollama works without a key. Set `CHARTER_LLM_API=ollama` and a base URL the planner container can reach. For a planner on the host, the capture proxy is published on `127.0.0.1:8080` and Postgres on `127.0.0.1:5432`.
+
+```sh
+docker compose --env-file private/compose.env --profile run run --rm planner --goal "Prove a broken access-control or injection issue on the authorized target." --url http://zero.webappsecurity.com/
+```
+
+The one-request worker is still available. With no `--url` it uses the charter's first allow rule.
+
+```sh
 docker compose --env-file private/compose.env run --rm worker
+docker compose --env-file private/compose.env run --rm worker python -m app.worker --url http://zero.webappsecurity.com/
 docker compose --env-file private/compose.env run --rm worker python -m app.worker --check-denial
 ```
 
-Open the [dashboard](http://127.0.0.1:8000) and select the completed run. Inspect the captured HTTP headers and body, then download the HTML or PDF report. The separate blocked run records the signed deny rule in the audit log. You can also browse the [local Juice Shop](http://127.0.0.1:3000). Browser activity on port 3000 is outside the worker capture path.
+`--check-denial` sends the charter's first deny rule. The bundled lab denies `http://juice-shop:3000/private`. A custom origin has no deny rule unless you add one, so the denial check belongs to the lab charter. You can also browse the [local Juice Shop](http://127.0.0.1:3000). Browser activity on port 3000 is outside the capture path.
 
-The worker issues one anonymous GET and disables redirects. Its header check reports a missing Content-Security-Policy response header on an HTML 200 response. A complete run can legitimately contain zero findings. The packaged lab and operator UI are intended for one trusted local user.
+Outside lab mode, the dashboard shows each proposed step with Approve and Deny. Lab mode, and the **unattended** checkbox, skip that queue. The charter is still enforced on every URL.
 
 ## Verify the demo
 
@@ -49,12 +76,14 @@ Rerun the approval command after expiry. Each approval creates a versioned bundl
 ```mermaid
 flowchart LR
   A[Signed charter and authorization] --> P[Scope gate and mitmproxy]
-  W[Fixed HTTPX worker] --> P
-  P --> J[Local Juice Shop]
-  J --> P
+  U[Dashboard: chosen URL] --> P
+  U --> L[Planner and workers]
+  L --> P
+  P --> T[Authorized origin]
+  T --> P
   P --> DB[(PostgreSQL)]
-  DB --> U[FastAPI dashboard]
+  DB --> U
   U --> R[HTML and PDF reports]
 ```
 
-The [design and operating notes](docs/architecture.md) describe the trust boundary, evidence format, network layout and local tests. The project implements the charter, evidence, reporting, dashboard and portfolio phases. The worker is deterministic and requires no model API key.
+The [design and operating notes](docs/architecture.md) describe the trust boundary, evidence format, network layout and local tests. Phase 1 records one signed exchange. The campaign plans the next step, sends it through the same proxy, writes the finding back, and plans again until the goal is proven or a budget runs out.
