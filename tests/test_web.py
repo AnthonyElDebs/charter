@@ -38,6 +38,8 @@ class WebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(TARGET, response.text)
         self.assertIn("zero.webappsecurity.com", response.text)
+        self.assertNotIn("http-equiv=\"refresh\"", response.text)
+        self.assertIn("type=\"text\"", response.text)
         self.assertIn("form-action 'self'", response.headers["content-security-policy"])
 
     def test_out_of_scope_capture_is_refused(self):
