@@ -507,7 +507,25 @@ def run_sqlmap(task, client):
                 "--threads", "1", "--technique", "BEUST", "--flush-session", "--output-dir", tmp]
         if client.campaign_id:
             argv.extend(["--header", f"X-Charter-Campaign: {client.campaign_id}"])
-        return run_command(argv, client)
+        result = run_command(argv, client)
+    low = result.observation.lower()
+    if "is vulnerable" in low or "identified the following injection point" in low:
+        exchange = client.send("GET", task["url"], intent=task["intent"])
+        path = urlsplit(task["url"]).path or "/"
+        finding = make_finding(
+            "SQL injection reported by sqlmap", "High",
+            f"sqlmap reported an injectable parameter on {path}. The confirming request is the bound exchange. "
+            "The tool transcript is untrusted and is not copied here.",
+            "The parameter is being combined with a SQL statement.",
+            "Repeat sqlmap against the approved URL through the capture proxy.",
+            "Bind the value as a parameter. Do not concatenate it into the statement.",
+            proven=True, check="sqli", endpoint=path)
+        if exchange and not exchange.blocked and not exchange.skipped:
+            stored = client.keep(exchange, finding)
+            if stored:
+                result.findings.append(stored)
+                result.observation += f"\nfinding: {stored['title']} proven=true run={stored['run_id']}"
+    return result
 
 
 def run_zap(task, client):

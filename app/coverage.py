@@ -6,8 +6,10 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
+import time
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit
 
 from .findings import make_finding
@@ -18,7 +20,11 @@ CHECKS = (
     "ssrf", "open-redirect", "cors", "csrf", "misconfig", "secrets",
     "jwt", "auth-session", "idor", "sweep",
 )
-SQL_ERRORS = ("sql syntax", "sqlite", "mysql", "postgresql", "odbc", "ora-", "unclosed quotation", "sqlstate")
+SQL_ERRORS = (
+    "sql syntax", "sqlite", "mysql", "postgresql", "odbc", "ora-", "unclosed quotation", "sqlstate",
+    "microsoft ole db", "incorrect syntax near", "unclosed quotation mark",
+    "quoted string not properly terminated", "conversion failed", "sql server", "mssql", "syntax error",
+)
 CSRF_NAMES = ("csrf", "xsrf", "token", "authenticity", "_token", "csrftoken")
 SECRET_PATTERNS = (
     ("cloud access key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
@@ -55,6 +61,37 @@ def _base(client):
         return client.target
     rules = client.charter.get("allow") or []
     return rules[0] if rules else ""
+
+
+def _subject(task, client):
+    url = task.get("url") if isinstance(task, dict) else ""
+    if isinstance(url, str) and url.startswith(("http://", "https://")):
+        return url
+    return _base(client)
+
+
+def _param_names(task, url, defaults):
+    supplied = task.get("params") if isinstance(task, dict) else None
+    if isinstance(supplied, list):
+        names = [name for name in supplied if isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,40}", name)]
+        return names[:8]
+    parsed = [name for name, _value in parse_qsl(urlsplit(url).query, keep_blank_values=True)]
+    if parsed:
+        return parsed[:8]
+    return list(defaults)
+
+
+def _sql_sleep():
+    try:
+        value = float(os.environ.get("CHARTER_SQLI_SLEEP", "2"))
+    except (TypeError, ValueError):
+        value = 2.0
+    return min(5.0, max(0.05, value))
+
+
+def _norm(body, payload):
+    text = (body or "").replace(payload or "", "")
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _abs(client, path):
@@ -142,15 +179,11 @@ def _emails(body):
 def run_xss_reflected(task, client):
     token = secrets.token_hex(3)
     marker = f'"><charterxss{token}>'
-    base = _base(client)
+    base = _subject(task, client)
     if not base:
         return _result([], [], "no in-scope URL for reflected XSS")
-    targets = [_query(base, {"q": marker})]
-    parts = urlsplit(base)
-    if parts.query:
-        targets = []
-        for name, _value in parse_qsl(parts.query, keep_blank_values=True)[:4]:
-            targets.append(_query(base, {name: marker}))
+    names = _param_names(task, base, ["q"])
+    targets = [_query(base, {name: marker}) for name in names]
     findings, lines = [], []
     for url in targets:
         exchange = _send(client, task, "GET", url)
@@ -171,17 +204,24 @@ def run_xss_reflected(task, client):
 def run_xss_stored(task, client):
     token = secrets.token_hex(3)
     marker = f'"><charterxss{token}>'
-    base = _base(client)
+    base = _subject(task, client)
     if not base:
         return _result([], [], "no in-scope page for stored XSS")
-    page = _send(client, task, "GET", base, use_session=False)
+    supplied = task.get("forms") if isinstance(task.get("forms"), list) and task.get("forms") else None
     findings, lines = [], []
-    _keep(client, page, None, findings, lines)
-    for form in _forms(page.body if page else ""):
+    if supplied:
+        forms = supplied
+        page_url = base
+    else:
+        page = _send(client, task, "GET", base.split("?")[0], use_session=False)
+        _keep(client, page, None, findings, lines)
+        forms = _forms(page.body if page else "")
+        page_url = page.url if page else base
+    for form in forms:
         if form["method"] != "POST":
             continue
-        action = urljoin(page.url, form["action"] or page.url)
-        if not _same_origin(page.url, action):
+        action = urljoin(page_url, form.get("action") or page_url)
+        if not _same_origin(page_url, action):
             continue
         body = {field["name"]: marker for field in form["fields"] if field["name"]} or {"comment": marker}
         posted = _send(client, task, "POST", action, body=body)
@@ -202,34 +242,92 @@ def run_xss_stored(task, client):
     return _result(lines, findings, "no stored markup")
 
 
+def _sqli_finding(exchange, name, title, detail):
+    path = urlsplit(exchange.url).path or "/"
+    return make_finding(
+        title, "High",
+        f"GET {path} parameter {name}: {detail}",
+        "The parameter is being combined with a SQL statement.",
+        "Repeat the baseline and the probe on the approved origin and compare the responses.",
+        "Bind the value as a parameter. Do not concatenate it into the statement.",
+        proven=True, check="sqli", endpoint=path)
+
+
+def _error_sqli(task, client, base, name, findings, lines):
+    baseline = _send(client, task, "GET", _query(base, {name: "charterbase"}))
+    injected = _send(client, task, "GET", _query(base, {name: "charterbase'"}))
+    finding = None
+    if injected and baseline and not injected.blocked and not baseline.blocked:
+        low = (injected.body or "").lower()
+        base_low = (baseline.body or "").lower()
+        if any(word in low and word not in base_low for word in SQL_ERRORS):
+            finding = _sqli_finding(injected, name, "SQL error after a quote in a parameter",
+                                    "a database error appeared after a single quote and was absent from the baseline.")
+    for exchange in (baseline, injected):
+        _keep(client, exchange, finding if exchange is injected else None, findings, lines)
+    return finding
+
+
+def _boolean_sqli(task, client, base, name, findings, lines):
+    pairs = (("1", "1 AND 1=1", "1 AND 1=2"), ("charter", "charter' OR '1'='1", "charter' OR '1'='2"))
+    for plain, truth, falsehood in pairs:
+        baseline = _send(client, task, "GET", _query(base, {name: plain}))
+        truth_ex = _send(client, task, "GET", _query(base, {name: truth}))
+        false_ex = _send(client, task, "GET", _query(base, {name: falsehood}))
+        finding = None
+        if all(item and not item.blocked and not item.skipped for item in (baseline, truth_ex, false_ex)):
+            base_n = _norm(baseline.body, plain)
+            true_n = _norm(truth_ex.body, truth)
+            false_n = _norm(false_ex.body, falsehood)
+            if (true_n != false_n and abs(len(true_n) - len(false_n)) >= 40
+                    and abs(len(true_n) - len(base_n)) + 20 < abs(len(false_n) - len(base_n))):
+                finding = _sqli_finding(
+                    truth_ex, name, "Boolean SQL condition changes the response",
+                    "a true condition tracked the baseline and the false condition did not.")
+        for exchange in (baseline, truth_ex, false_ex):
+            _keep(client, exchange, finding if exchange is truth_ex else None, findings, lines)
+        if finding:
+            return finding
+    return None
+
+
+def _timed(task, client, base, name, payload):
+    started = time.monotonic()
+    exchange = _send(client, task, "GET", _query(base, {name: payload}))
+    return exchange, time.monotonic() - started
+
+
+def _time_sqli(task, client, base, name, findings, lines):
+    delay = _sql_sleep()
+    baseline, base_elapsed = _timed(task, client, base, name, "1")
+    payloads = ("1;WAITFOR DELAY '0:0:2'--", "1' AND SLEEP(2)--")
+    finding = None
+    delayed = None
+    for payload in payloads:
+        delayed, elapsed = _timed(task, client, base, name, payload)
+        if (delayed and baseline and not delayed.blocked and not baseline.blocked
+                and elapsed - base_elapsed >= delay * 0.75 and elapsed >= delay * 0.75):
+            finding = _sqli_finding(delayed, name, "Delayed SQL statement changes the response time",
+                                    "the probe took longer than the baseline by the configured SQL delay.")
+            break
+    for exchange in (baseline, delayed):
+        _keep(client, exchange, finding if exchange is delayed else None, findings, lines)
+    return finding
+
+
 def run_sqli(task, client):
-    base = _base(client)
+    base = _subject(task, client)
     if not base:
         return _result([], [], "no in-scope URL for SQL injection")
-    parts = urlsplit(base)
-    names = [name for name, _value in parse_qsl(parts.query, keep_blank_values=True)[:3]] or ["q", "id", "search"]
+    names = _param_names(task, base, ["q", "id", "search"])
     findings, lines = [], []
-    for name in names[:3]:
-        baseline = _send(client, task, "GET", _query(base, {name: "charterbase"}))
-        injected = _send(client, task, "GET", _query(base, {name: "charterbase'"}))
-        finding = None
-        if injected and baseline and not injected.blocked and not baseline.blocked:
-            low = (injected.body or "").lower()
-            base_low = (baseline.body or "").lower()
-            if any(word in low and word not in base_low for word in SQL_ERRORS):
-                path = urlsplit(injected.url).path or "/"
-                finding = make_finding(
-                    "SQL error after a quote in a parameter", "High",
-                    f"GET {path} parameter {name} returned a database error after a single quote. "
-                    "The baseline value did not.",
-                    "The parameter is being combined with a SQL statement.",
-                    "Compare the baseline value with the same value plus a quote, on the approved origin.",
-                    "Bind the value as a parameter. Do not concatenate it into the statement.",
-                    proven=True, check="sqli", endpoint=path)
-        for exchange in (baseline, injected):
-            _keep(client, exchange, finding if exchange is injected else None, findings, lines)
-        if finding:
-            break
+    for name in names:
+        if _error_sqli(task, client, base, name, findings, lines):
+            return _result(lines, findings, "no SQL error difference")
+        if _boolean_sqli(task, client, base, name, findings, lines):
+            return _result(lines, findings, "no SQL error difference")
+        if _time_sqli(task, client, base, name, findings, lines):
+            return _result(lines, findings, "no SQL error difference")
     return _result(lines, findings, "no SQL error difference")
 
 
@@ -259,10 +357,11 @@ def run_command_injection(task, client):
 
 
 def run_traversal(task, client):
-    base = _base(client)
+    base = _subject(task, client)
     if not base:
         return _result([], [], "no in-scope URL for path traversal")
-    url = _query(base, {"file": "../../../../etc/passwd"})
+    name = (_param_names(task, base, ["file"]) or ["file"])[0]
+    url = _query(base, {name: "../../../../etc/passwd"})
     exchange = _send(client, task, "GET", url)
     finding = None
     if exchange and not exchange.blocked and "root:x:0:0:" in (exchange.body or ""):
@@ -280,12 +379,13 @@ def run_traversal(task, client):
 
 
 def run_ssrf(task, client):
-    base = _base(client)
+    base = _subject(task, client)
     if not base:
         return _result([], [], "no in-scope URL for SSRF")
+    name = (_param_names(task, base, ["url"]) or ["url"])[0]
     origin = _origin(base)
-    baseline = _send(client, task, "GET", _query(base, {"q": "charter"}))
-    fetched = _send(client, task, "GET", _query(base, {"url": origin + "/robots.txt"}))
+    baseline = _send(client, task, "GET", _query(base, {name: "charter"}))
+    fetched = _send(client, task, "GET", _query(base, {name: origin + "/robots.txt"}))
     finding = None
     if fetched and baseline and not fetched.blocked and not baseline.blocked:
         if "User-agent" in (fetched.body or "") and "User-agent" not in (baseline.body or ""):
@@ -305,10 +405,11 @@ def run_ssrf(task, client):
 
 
 def run_open_redirect(task, client):
-    base = _base(client)
+    base = _subject(task, client)
     if not base:
         return _result([], [], "no in-scope URL for open redirect")
-    exchange = _send(client, task, "GET", _query(base, {"next": "https://example.invalid/charter"}))
+    name = (_param_names(task, base, ["next"]) or ["next"])[0]
+    exchange = _send(client, task, "GET", _query(base, {name: "https://example.invalid/charter"}))
     finding = None
     if exchange and not exchange.blocked:
         location = exchange.headers.get("location", "")
@@ -352,20 +453,27 @@ def run_cors(task, client):
 
 
 def run_csrf(task, client):
-    base = _base(client)
+    base = _subject(task, client)
     if not base:
         return _result([], [], "no in-scope page for CSRF")
-    page = _send(client, task, "GET", base.split("?")[0])
+    supplied = task.get("forms") if isinstance(task.get("forms"), list) and task.get("forms") else None
     findings, lines = [], []
-    _keep(client, page, None, findings, lines)
-    for form in _forms(page.body if page else ""):
+    if supplied:
+        forms = supplied
+        page_url = base
+    else:
+        page = _send(client, task, "GET", base.split("?")[0])
+        _keep(client, page, None, findings, lines)
+        forms = _forms(page.body if page else "")
+        page_url = page.url if page else base
+    for form in forms:
         if form["method"] not in {"POST", "PUT", "PATCH", "DELETE"}:
             continue
         names = " ".join(field["name"] or "" for field in form["fields"]).lower()
         if any(token in names for token in CSRF_NAMES):
             continue
-        action = urljoin(page.url, form["action"] or page.url)
-        if not _same_origin(page.url, action):
+        action = urljoin(page_url, form.get("action") or page_url)
+        if not _same_origin(page_url, action):
             continue
         posted = _send(client, task, "POST", action, body={"charter": "1"})
         path = urlsplit(action).path or "/"
@@ -617,6 +725,10 @@ def execute_coverage(task, client):
     }
     if check == "sweep":
         from .workers import StepResult
+        ledger = getattr(client, "ledger", None)
+        if ledger is not None and ledger.endpoints:
+            from .pipeline import run_pipeline
+            return run_pipeline(client)
         findings, lines = [], []
         for name in runners:
             result = runners[name](task, client)

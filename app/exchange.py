@@ -75,6 +75,7 @@ class Client:
         self.target = target
         self.identity = {}
         self.credentials = {}
+        self.ledger = None
         options = {"trust_env": False, "follow_redirects": False, "timeout": 30}
         if transport is not None:
             self.http = httpx.Client(transport=transport, **options)
@@ -162,6 +163,11 @@ class Client:
                             headers=response.headers)
         if not denied:
             self._remember(exchange)
+            if self.ledger is not None:
+                try:
+                    self.ledger.observe(exchange)
+                except Exception:
+                    pass
         return exchange
 
     def _blocked(self, method, url, reason, intent):

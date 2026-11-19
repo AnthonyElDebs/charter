@@ -53,7 +53,7 @@ Ollama works without a key. Set `CHARTER_LLM_API=ollama` and a base URL the plan
 docker compose --env-file private/compose.env --profile run run --rm planner --goal "Prove a broken access-control or injection issue on the authorized target." --url http://zero.webappsecurity.com/
 ```
 
-A full-coverage campaign asks the planner to chain reconnaissance, authentication, and the coverage checks. The image includes nuclei, sqlmap, ffuf, and ZAP. Budgets default to 40 turns, 400 requests, and 400000 tokens. Optional test credentials stay in `CHARTER_AUTH_USER`, `CHARTER_AUTH_PASSWORD`, and `CHARTER_AUTH_LOGIN_URL`, or in the dashboard fields. They are not written into the planner prompt.
+A full-coverage campaign asks the planner to chain reconnaissance, authentication, and the coverage checks. After recon, the campaign ledger keeps every discovered parameter and form, and a deterministic matrix tests those candidates without another model call. Recon is not repeated once that ledger is mapped. The image includes nuclei, sqlmap, ffuf, and ZAP. Budgets default to 40 turns, 400 requests, and 400000 tokens. Optional test credentials stay in `CHARTER_AUTH_USER`, `CHARTER_AUTH_PASSWORD`, and `CHARTER_AUTH_LOGIN_URL`, or in the dashboard fields. They are not written into the planner prompt.
 
 ```sh
 docker compose --env-file private/compose.env --profile run run --rm planner --goal "Cover the OWASP web and API classes on the authorized target. Authenticate when credentials are available, then prove reflected and stored XSS, SQL injection, command injection, traversal, SSRF, open redirect, CORS, CSRF, misconfiguration, exposed secrets, JWT weakness, session weakness, and IDOR." --url http://juice-shop:3000/

@@ -17,6 +17,38 @@ def _rank(finding):
     return _RANK.get(str(finding.get("severity", "")).lower(), 0)
 
 
+def dedupe_key(finding):
+    """Header gaps collapse to one record per missing set. Everything else is one per check, title, and path."""
+    title = str(finding.get("title") or "")
+    if title == "Response is missing browser security headers":
+        evidence = finding.get("evidence") or ""
+        match = re.search(r"without (.+)\.", evidence)
+        return ("headers", match.group(1) if match else title)
+    return (str(finding.get("check") or title), title, str(finding.get("endpoint") or ""))
+
+
+def _prefer(new, old):
+    if bool(new.get("proven")) != bool(old.get("proven")):
+        return bool(new.get("proven"))
+    return _rank(new) > _rank(old)
+
+
+def dedupe_findings(findings):
+    best = {}
+    order = []
+    for item in findings:
+        if not isinstance(item, dict):
+            continue
+        key = dedupe_key(item)
+        current = best.get(key)
+        if current is None:
+            best[key] = item
+            order.append(key)
+        elif _prefer(item, current):
+            best[key] = item
+    return [best[key] for key in order]
+
+
 def choose_finding(current, proposed, evidence):
     """Keep a finding only when the run already has HTTP evidence."""
     if not evidence or not isinstance(proposed, dict) or not proposed.get("title"):

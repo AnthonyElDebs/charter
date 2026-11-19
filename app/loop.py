@@ -8,6 +8,9 @@ from .exchange import Client
 from .framing import frame
 from .governor import BudgetExhausted, Governor
 from .llm import LlmError
+from .findings import dedupe_findings
+from .ledger import Ledger
+from .pipeline import recon_cap, run_pipeline
 from .planner import PlanRejected, Planner
 from .scope_gate import load_verified, local_charter, open_scope, restrictions_open
 from .workers import execute
@@ -43,11 +46,35 @@ def _proven(findings):
     return any(item.get("proven") and item.get("run_id") for item in findings)
 
 
+def _remember(findings, extra):
+    findings.extend(extra)
+    findings[:] = dedupe_findings(findings)
+
+
+def _matrix(client, findings, observations, lab, approval):
+    ledger = client.ledger
+    if ledger is None or ledger.pipeline_done or not ledger.mapped:
+        return
+    if not lab:
+        decision = approval.require(client.campaign_id, {
+            "worker": "coverage", "check": "sweep",
+            "intent": "run the coverage matrix on endpoints already discovered",
+        })
+        if decision != "approved":
+            ledger.pipeline_done = True
+            observations.append(frame(f"Operator {decision} the coverage matrix."))
+            return
+    result = run_pipeline(client)
+    _remember(findings, result.findings)
+    observations.append(frame(result.observation.split("\n", 1)[0][:500]))
+
+
 def _drive(goal, charter, client, planner, governor, findings, observations, lab, approval, target):
     while True:
         governor.before_turn()
         try:
-            plan, tokens = planner.plan(goal, charter, observations, _digest(findings), governor.snapshot(), target)
+            plan, tokens = planner.plan(goal, charter, observations, _digest(findings), governor.snapshot(),
+                                        target, client.ledger.snapshot() if client.ledger else None)
         except PlanRejected as exc:
             governor.add_tokens(exc.tokens)
             observations.append(frame("Planner output was rejected: " + str(exc) + ". Return one JSON object."))
@@ -66,7 +93,14 @@ def _drive(goal, charter, client, planner, governor, findings, observations, lab
             observations.append(frame(
                 "goal_proven was ignored because no finding with proven=true is bound to captured HTTP evidence."
             ))
+        executed = False
+        skipped_recon = False
         for task in plan.tasks:
+            if task["worker"] == "recon" and client.ledger is not None and (
+                    client.ledger.mapped or client.ledger.recon_turns >= recon_cap()):
+                skipped_recon = True
+                observations.append(frame("Recon was not repeated. The ledger already lists the site structure."))
+                continue
             if not lab:
                 decision = approval.require(client.campaign_id, task)
                 if decision != "approved":
@@ -76,10 +110,19 @@ def _drive(goal, charter, client, planner, governor, findings, observations, lab
                     continue
             log.info("campaign %s worker %s", client.campaign_id, task["worker"])
             result = execute(task, client)
-            findings.extend(result.findings)
+            executed = True
+            if task["worker"] == "recon" and client.ledger is not None:
+                client.ledger.recon_turns += 1
+                client.ledger.mapped = True
+            _remember(findings, result.findings)
             observations.append(frame(result.observation))
+        if client.ledger is not None and client.ledger.mapped:
+            _matrix(client, findings, observations, lab, approval)
         if len(observations) > 8:
             del observations[:-8]
+        if skipped_recon and not executed and client.ledger is not None and client.ledger.pipeline_done:
+            return {"state": "proven" if _proven(findings) else "complete",
+                    "reason": "coverage matrix finished; repeated recon was not run"}
         if plan.done:
             return {"state": "proven" if _proven(findings) else "complete", "reason": plan.summary}
 
@@ -110,6 +153,7 @@ def run_campaign(goal, *, root, store, llm, lab=None, governor=None, approval=No
     try:
         client = Client(root=root, charter=charter, store=store, governor=governor, proxy=proxy,
                         transport=transport, campaign_id=campaign_id, target=target)
+        client.ledger = Ledger()
         supplied = credentials if credentials is not None else credentials_from_env()
         client.credentials = {key: supplied.get(key, "") for key in ("username", "password", "login_url")}
         probe = target or (charter.get("allow") or [""])[0]
