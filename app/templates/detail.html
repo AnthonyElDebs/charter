@@ -13,6 +13,15 @@
 <dt>Allow</dt><dd>{{ run.details.charter.allow|join(', ') }}</dd><dt>Deny</dt><dd>{{ run.details.charter.deny|join(', ') }}</dd>
 <dt>Charter SHA-256</dt><dd class="digest">{{ run.details.charter_sha256 }}</dd></dl></div></section>{% endif %}
 {% if run.details.campaign_id %}<p><a href="/campaigns/{{ run.details.campaign_id }}">Campaign</a></p>{% endif %}
+{% if run.details.report %}<section><h2>Engagement narrative</h2><div class="panel">
+<p>{{ run.details.report.executive_summary }}</p>
+<h3>Attack chain</h3><p>{{ run.details.report.attack_chain }}</p>
+{% for item in run.details.report.findings %}<h3>{{ item.title or item.check }}</h3>
+<p>{{ item.narrative }}</p>{% if item.cvss %}<p>{{ item.cvss }}</p>{% endif %}
+{% if item.reproduce %}<h4>Reproduction</h4><p>{{ item.reproduce }}</p>{% endif %}
+{% if item.remediation %}<h4>Remediation</h4><p>{{ item.remediation }}</p>{% endif %}
+{% if item.run_id %}<p>Evidence run {{ item.run_id }}</p>{% endif %}{% endfor %}
+</div></section>{% endif %}
 {% if run.finding %}<section><h2>Finding</h2><article class="panel observation"><span class="pill {{ run.finding.severity|lower }}">{{ run.finding.severity }} severity</span>
 <h3>{{ run.finding.title }}</h3>{% if run.finding.check %}<p>Check {{ run.finding.check }}</p>{% endif %}{% if run.finding.proven %}<p>Proven against this captured exchange.</p>{% endif %}<p>{{ run.finding.evidence }}</p>
 {% for key,label in [('impact','Impact'),('reproduce','Verification'),('remediation','Remediation')] %}

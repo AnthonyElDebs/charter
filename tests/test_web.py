@@ -116,6 +116,21 @@ class WebTests(unittest.TestCase):
         self.assertEqual(thread.call_args.kwargs["args"][6]["password"], "Lab-secret-99")
         self.assertTrue(started.call_args.args[1]["authenticated"])
 
+    def test_campaign_starts_when_no_model_is_configured(self):
+        from app.llm import LlmError
+        with patch("app.web.Llm.from_env", side_effect=LlmError("Set CHARTER_LLM_BASE_URL and CHARTER_LLM_MODEL")), \
+             patch("app.web.storage.running_campaign", return_value=None), \
+             patch("app.web.storage.start_campaign", return_value="cid"), \
+             patch("app.web.threading.Thread") as thread:
+            thread.return_value.start = lambda: None
+            response = self.client.post("/actions/campaign",
+                                        data={"url": TARGET, "goal": "Prove access control", "unattended": "1",
+                                              "auth_user2": "bob@example.test", "auth_password2": "Lab-secret-22"},
+                                        follow_redirects=False)
+        self.assertEqual(response.headers["location"], "/campaigns/cid")
+        self.assertIsNone(thread.call_args.kwargs["args"][1])
+        self.assertEqual(thread.call_args.kwargs["args"][6]["second"]["password"], "Lab-secret-22")
+
 
 if __name__ == "__main__":
     unittest.main()

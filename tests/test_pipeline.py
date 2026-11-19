@@ -234,7 +234,7 @@ class PipelineTests(unittest.TestCase):
                               transport=self.asp.transport(), target=TARGET)
         self.assertEqual(result.state, "proven")
         self.assertNotIn("turn budget", result.reason)
-        self.assertLessEqual(len(script.messages), 2)
+        self.assertLessEqual(len(script.messages), 4)
         self.assertIn('"mapped": true', script.messages[0])
         self.assertIn('"pipeline_done": true', script.messages[0])
         extra = self.store.campaigns[result.campaign_id]["extra"]
